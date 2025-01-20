@@ -41,6 +41,22 @@ const roles = [
   "REBALANCER"
 ]
 
+// Add mapping for admin roles
+const roleToAdminRole: Record<string, string> = {
+  "GUARDIAN": "GUARDIAN_ADMIN",
+  "STRATEGY_OPERATOR": "STRATEGY_OPERATOR_ADMIN",
+  "EULER_EARN_MANAGER": "EULER_EARN_MANAGER_ADMIN",
+  "WITHDRAWAL_QUEUE_MANAGER": "WITHDRAWAL_QUEUE_MANAGER_ADMIN",
+  "REBALANCER": "REBALANCER_ADMIN",
+  // Admin roles are managed by DEFAULT_ADMIN_ROLE
+  "GUARDIAN_ADMIN": "DEFAULT_ADMIN_ROLE",
+  "STRATEGY_OPERATOR_ADMIN": "DEFAULT_ADMIN_ROLE",
+  "EULER_EARN_MANAGER_ADMIN": "DEFAULT_ADMIN_ROLE",
+  "WITHDRAWAL_QUEUE_MANAGER_ADMIN": "DEFAULT_ADMIN_ROLE",
+  "REBALANCER_ADMIN": "DEFAULT_ADMIN_ROLE",
+  "DEFAULT_ADMIN_ROLE": "DEFAULT_ADMIN_ROLE"
+}
+
 // Mock function to generate random addresses
 const generateRandomAddress = () => {
   return '0x' + [...Array(40)].map(() => Math.floor(Math.random() * 16).toString(16)).join('')
@@ -151,6 +167,62 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   // Add new state variables after other state declarations
   const [vaultName, setVaultName] = useState<string>('')
   const [vaultAsset, setVaultAsset] = useState<{ address: string; symbol: string }>({ address: '', symbol: '' })
+
+  const [availableRoles, setAvailableRoles] = useState<string[]>([])
+
+  // Add function to check if an address has a role
+  const checkHasRole = async (role: string, account: string) => {
+    if (!signer || !address) return false;
+
+    try {
+      const earnContract = getEarnVaultContract(address.toString());
+      const roleHash = role === "DEFAULT_ADMIN_ROLE" ? 
+        "0x0000000000000000000000000000000000000000000000000000000000000000" :
+        ethers.id(role);
+      
+      return await earnContract.hasRole(roleHash, account);
+    } catch (err) {
+      console.error(`Error checking role ${role} for account ${account}:`, err);
+      return false;
+    }
+  };
+
+  // Add function to update available roles
+  const updateAvailableRoles = async () => {
+    if (!signer) return;
+    
+    try {
+      const signerAddress = await signer.getAddress();
+      const hasDefaultAdmin = await checkHasRole("DEFAULT_ADMIN_ROLE", signerAddress);
+      
+      const availableRoles = await Promise.all(
+        roles.map(async (role) => {
+          const adminRole = roleToAdminRole[role];
+          if (!adminRole) return null;
+          
+          // If it's an admin role, check for DEFAULT_ADMIN_ROLE
+          if (role.endsWith("_ADMIN")) {
+            return hasDefaultAdmin ? role : null;
+          }
+          
+          // For non-admin roles, check if user has the corresponding admin role
+          const hasAdminRole = await checkHasRole(adminRole, signerAddress);
+          return hasAdminRole ? role : null;
+        })
+      );
+      
+      setAvailableRoles(availableRoles.filter((role): role is string => role !== null));
+    } catch (err) {
+      console.error('Error updating available roles:', err);
+    }
+  };
+
+  // Add effect to update available roles when signer changes
+  useEffect(() => {
+    if (signer && address) {
+      updateAvailableRoles();
+    }
+  }, [signer, address]);
 
   // Add useEffect to fetch strategies
   const fetchStrategies = async () => {
@@ -876,7 +948,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
                   <SelectContent>
-                    {roles.map((role) => (
+                    {availableRoles.map((role) => (
                       <SelectItem key={role} value={role}>
                         {role}
                       </SelectItem>
