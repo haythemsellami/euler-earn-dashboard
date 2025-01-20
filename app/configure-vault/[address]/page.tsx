@@ -1,6 +1,5 @@
 'use client'
 
-import { useParams } from 'next/navigation'
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -27,7 +26,6 @@ import erc20ABI from '@/app/abis/ERC20.json'
 import { useNotification } from '@/hooks/useNotification'
 import { getExplorerAddressLink } from '../../config/explorer'
 import { useToast } from "@/components/ui/use-toast";
-import { strategyABI } from '@/contracts/abis';
 
 const roles = [
   "DEFAULT_ADMIN_ROLE",
@@ -76,14 +74,6 @@ const getRoleOwners = async (role: string, earnContract: ethers.Contract) => {
     return ['0x0000000000000000000000000000000000000000']
   }
 }
-
-// Mock strategies - REMOVED
-// const strategies = [
-//   { id: 1, name: "Strategy A" },
-//   { id: 2, name: "Strategy B" },
-//   { id: 3, name: "Strategy C" },
-//   { id: 4, name: "Strategy D" },
-// ]
 
 // Add enum to match Solidity contract
 enum StrategyStatus {
@@ -147,6 +137,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   const [settingCapStrategy, setSettingCapStrategy] = useState<string | null>(null)
   const [newCap, setNewCap] = useState('')
 
+  // Remove the mock strategies state
   const [strategies, setStrategies] = useState<Array<{id: string; name: string; status: 'active' | 'emergency'}>>([
     { id: '1', name: "Strategy A", status: 'active' },
     { id: '2', name: "Strategy B", status: 'active' },
@@ -157,7 +148,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   // Add new state
   const [earnStrategies, setEarnStrategies] = useState<Strategy[]>([])
 
-  // Add new function to fetch strategies
+  // Add new state variables after other state declarations
+  const [vaultName, setVaultName] = useState<string>('')
+  const [vaultAsset, setVaultAsset] = useState<{ address: string; symbol: string }>({ address: '', symbol: '' })
+
+  // Add useEffect to fetch strategies
   const fetchStrategies = async () => {
     if (!signer || !address) return;
 
@@ -202,7 +197,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
           console.log('Fetching details for strategy:', strategyAddress);
           const strategyDetails = await earnContract.getStrategy(strategyAddress);
           const strategyContract = new ethers.Contract(strategyAddress, earnVaultABI, signer);
-          const name = await strategyContract.name();
+          let name;
+          try {
+            name = await strategyContract.name();
+          } catch (err) {
+            console.warn('Failed to get strategy name:', err);
+            name = `Strategy ${strategyAddress.slice(0, 6)}...${strategyAddress.slice(-4)}`;
+          }
 
           console.log('Strategy details:', {
             address: strategyAddress,
@@ -216,7 +217,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
           return {
             address: strategyAddress,
             name,
-            status: strategyDetails.status === 0 ? 'inactive' : strategyDetails.status === 1 ? 'active' : 'emergency',
+            status: Number(strategyDetails.status) === 0 ? 'inactive' : Number(strategyDetails.status) === 1 ? 'active' : 'emergency',
             allocationPoints: strategyDetails.allocationPoints,
             allocated: strategyDetails.allocated,
             assetDecimals,
@@ -252,6 +253,31 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     if (signer && address) {
       fetchRoleOwners();
     }
+  }, [signer, address]);
+
+  // Add useEffect to fetch vault details
+  useEffect(() => {
+    const fetchVaultDetails = async () => {
+      if (!signer || !address) return;
+
+      try {
+        const earnContract = getEarnVaultContract(address.toString());
+        const [name, assetAddress] = await Promise.all([
+          earnContract.name(),
+          earnContract.asset()
+        ]);
+
+        const assetContract = new ethers.Contract(assetAddress, erc20ABI, signer);
+        const assetSymbol = await assetContract.symbol();
+
+        setVaultName(name);
+        setVaultAsset({ address: assetAddress, symbol: assetSymbol });
+      } catch (err) {
+        console.error('Error fetching vault details:', err);
+      }
+    };
+
+    fetchVaultDetails();
   }, [signer, address]);
 
   const fetchRoleOwners = async () => {
@@ -357,7 +383,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   };
 
   const handleConfirmRebalance = async () => {
-    if (!selectedStrategies.length) {
+    if (!selectedStrategies.length || !signer || !address) {
       toast({
         title: "Error",
         description: "Please select at least one strategy to rebalance",
@@ -372,24 +398,34 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
         .sort((a, b) => a.order - b.order)
         .map(s => s.id);
 
-      const earnVault = getEarnVaultContract(address.toString());
-      const tx = await earnVault.rebalance(orderedAddresses);
+      const earnContract = new ethers.Contract(
+        address as string,
+        earnVaultABI,
+        signer
+      );
+
+      const tx = await earnContract.rebalance(orderedAddresses);
       await tx.wait();
 
-      toast({
-        title: "Success",
-        description: "Rebalance operation completed successfully",
-      });
+      showNotification('Success', 'Rebalance operation completed successfully', 'success');
 
       // Clear selection after successful rebalance
       setSelectedStrategies([]);
-    } catch (error) {
+      
+      // Refresh strategies to get updated allocations
+      await fetchStrategies();
+
+    } catch (error: any) {
       console.error('Rebalance error:', error);
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to rebalance strategies",
-        variant: "destructive",
-      });
+      
+      // Handle specific error cases
+      if (error.message.toLowerCase().includes('invalid strategy order')) {
+        showNotification('Error', 'Invalid strategy order. Please check your selection.', 'error');
+      } else if (error.message.toLowerCase().includes('strategy not active')) {
+        showNotification('Error', 'One or more selected strategies are not active.', 'error');
+      } else {
+        showNotification('Error', 'Failed to rebalance strategies. Please try again.', 'error');
+      }
     }
   };
 
@@ -417,6 +453,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     if (!signer || !address) return;
 
     try {
+      setIsProcessing(prev => ({ ...prev, 'gulp': true }))
       const earnContract = new ethers.Contract(
         address as string,
         earnVaultABI,
@@ -427,9 +464,14 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       await tx.wait()
       
       showNotification('Success', 'Gulp completed successfully', 'success')
+      
+      // Refresh strategies to get updated allocations
+      await fetchStrategies()
     } catch (err: any) {
       console.error("Error during gulp:", err)
       showNotification('Error', `Gulp failed: ${err.message}`, 'error')
+    } finally {
+      setIsProcessing(prev => ({ ...prev, 'gulp': false }))
     }
   }
 
@@ -649,6 +691,12 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       )
 
       const points = BigInt(newAllocationPoints)
+      
+      // Prevent setting 0 allocation points for cash reserve
+      if (isCashReserve(adjustingStrategy) && points === BigInt(0)) {
+        throw new Error("Cash reserve allocation points cannot be set to 0")
+      }
+
       const tx = await earnContract.adjustAllocationPoints(adjustingStrategy, points)
       await tx.wait()
       
@@ -659,7 +707,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       
     } catch (err: any) {
       console.error("Error adjusting allocation points:", err)
-      showNotification('Error', 'Failed to adjust allocation points. Please try again.', 'error')
+      if (err.message.includes("Cash reserve allocation points cannot be set to 0")) {
+        showNotification('Error', 'Cash reserve allocation points cannot be set to 0', 'error')
+      } else {
+        showNotification('Error', 'Failed to adjust allocation points. Please try again.', 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, [`adjust-${adjustingStrategy}`]: false }))
     }
@@ -725,21 +777,45 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       </div>
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle>Configure Euler Earn Vault</CardTitle>
-          <CardDescription>
-            Vault Address:{' '}
-            {address && chainId && getExplorerAddressLink(chainId, address.toString()) ? (
-              <a 
-                href={getExplorerAddressLink(chainId, address.toString()) || '#'} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:text-blue-800"
-              >
-                {address.toString()}
-              </a>
-            ) : (
-              address
-            )}
+          <CardDescription className="space-y-2">
+            <div>
+              Name:{' '}
+              <span className="text-foreground">
+                {vaultName || 'Loading...'}
+              </span>
+            </div>
+            <div>
+              Asset:{' '}
+              {vaultAsset.address && chainId && getExplorerAddressLink(chainId, vaultAsset.address) ? (
+                <a 
+                  href={getExplorerAddressLink(chainId, vaultAsset.address) || '#'} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-800"
+                >
+                  {vaultAsset.symbol} ({vaultAsset.address.slice(0, 6)}...{vaultAsset.address.slice(-4)})
+                </a>
+              ) : (
+                <span className="text-foreground">
+                  {vaultAsset.symbol || 'Loading...'}
+                </span>
+              )}
+            </div>
+            <div>
+              Vault Address:{' '}
+              {address && chainId && getExplorerAddressLink(chainId, address.toString()) ? (
+                <a 
+                  href={getExplorerAddressLink(chainId, address.toString()) || '#'} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:text-blue-800"
+                >
+                  {address.toString()}
+                </a>
+              ) : (
+                address
+              )}
+            </div>
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -919,16 +995,19 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                             </TableCell>
                             <TableCell>
                               <div className="flex space-x-2">
+                                {/* Show adjust points for both cash reserve and active strategies */}
+                                {(isCashReserve(strategy.address) || strategy.status !== 'inactive') && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setAdjustingStrategy(strategy.address)}
+                                    disabled={isProcessing[`adjust-${strategy.address}`]}
+                                  >
+                                    {isProcessing[`adjust-${strategy.address}`] ? 'Adjusting...' : 'Adjust Points'}
+                                  </Button>
+                                )}
                                 {!isCashReserve(strategy.address) && strategy.status !== 'inactive' && (
                                   <>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => setAdjustingStrategy(strategy.address)}
-                                      disabled={isProcessing[`adjust-${strategy.address}`]}
-                                    >
-                                      {isProcessing[`adjust-${strategy.address}`] ? 'Adjusting...' : 'Adjust Points'}
-                                    </Button>
                                     <Button
                                       variant="outline"
                                       size="sm"
@@ -1052,7 +1131,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                   {earnStrategies
                     .filter(strategy => strategy.status === 'active' && !isCashReserve(strategy.address))
                     .map((strategy) => {
-                      const selected = selectedStrategies.find(s => s.id === strategy.address)
+                      const selected = selectedStrategies.find(s => s.id === strategy.address);
                       return (
                         <div key={strategy.address} className="flex items-center space-x-2">
                           <Checkbox
@@ -1064,27 +1143,44 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                             htmlFor={`strategy-${strategy.address}`}
                             className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                           >
-                            {strategy.name}
-                            {selected && (
-                              <span className="ml-2 text-sm font-semibold text-blue-600">
-                                ({selected.order})
-                              </span>
-                            )}
-                            <div className="text-xs text-gray-500">
+                            <span className="flex items-center gap-2">
+                              {strategy.name}
+                              {selected && (
+                                <span className="text-sm font-semibold text-blue-600">
+                                  (Order: {selected.order})
+                                </span>
+                              )}
+                            </span>
+                            <span className="text-xs text-gray-500 block mt-1">
                               {strategy.address.slice(0, 6)}...{strategy.address.slice(-4)}
-                            </div>
+                            </span>
                           </label>
                         </div>
-                      )
+                      );
                     })}
+                  {earnStrategies.filter(strategy => strategy.status === 'active' && !isCashReserve(strategy.address)).length === 0 && (
+                    <div className="text-center text-gray-500">
+                      No active strategies available for rebalancing
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
-                  <Button onClick={handleConfirmRebalance}>Confirm Rebalance</Button>
+                  <Button 
+                    onClick={handleConfirmRebalance}
+                    disabled={selectedStrategies.length === 0}
+                  >
+                    Confirm Rebalance
+                  </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
             <Button onClick={handleHarvest}>Harvest</Button>
-            <Button onClick={handleGulp}>Gulp</Button>
+            <Button 
+              onClick={handleGulp}
+              disabled={isProcessing['gulp']}
+            >
+              {isProcessing['gulp'] ? 'Processing...' : 'Gulp'}
+            </Button>
           </div>
         </CardContent>
       </Card>

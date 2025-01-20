@@ -25,6 +25,42 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [isConnecting, setIsConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const checkPreviousConnection = async () => {
+    try {
+      // @ts-expect-error - ethereum is injected by metamask
+      if (!window.ethereum) return;
+
+      // Check if we have a stored connection
+      const wasConnected = localStorage.getItem('walletConnected') === 'true';
+      if (wasConnected) {
+        // @ts-expect-error - ethereum is injected by metamask
+        const provider = new BrowserProvider(window.ethereum);
+        const accounts = await provider.listAccounts();
+        
+        if (accounts.length > 0) {
+          const signer = await provider.getSigner();
+          const network = await provider.getNetwork();
+          const currentChainId = Number(network.chainId);
+          
+          setProvider(provider);
+          setSigner(signer);
+          setAccount(accounts[0].address);
+          setChainId(currentChainId);
+        } else {
+          // Clear stored connection if no accounts found
+          localStorage.removeItem('walletConnected');
+        }
+      }
+    } catch (err) {
+      console.error('Error checking previous connection:', err);
+      localStorage.removeItem('walletConnected');
+    }
+  };
+
+  useEffect(() => {
+    checkPreviousConnection();
+  }, []);
+
   const switchNetwork = async (targetChainId: number) => {
     setError(null)
     try {
@@ -91,8 +127,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setSigner(signer)
       setAccount(accounts[0])
       setChainId(currentChainId)
+
+      // Store connection state
+      localStorage.setItem('walletConnected', 'true');
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect wallet")
+      localStorage.removeItem('walletConnected');
     }
     setIsConnecting(false)
   }
@@ -112,12 +152,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         } else {
           setAccount(null)
           setSigner(null)
+          // Clear stored connection when user disconnects
+          localStorage.removeItem('walletConnected');
         }
       })
 
       // @ts-expect-error - ethereum is injected by metamask
       window.ethereum.on('chainChanged', (_chainId: string) => {
         window.location.reload()
+      })
+
+      // Handle disconnect
+      // @ts-expect-error - ethereum is injected by metamask
+      window.ethereum.on('disconnect', () => {
+        setAccount(null)
+        setSigner(null)
+        setProvider(null)
+        setChainId(null)
+        localStorage.removeItem('walletConnected');
       })
     }
 
@@ -128,6 +180,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         window.ethereum.removeAllListeners('accountsChanged')
         // @ts-expect-error - ethereum is injected by metamask
         window.ethereum.removeAllListeners('chainChanged')
+        // @ts-expect-error - ethereum is injected by metamask
+        window.ethereum.removeAllListeners('disconnect')
       }
     }
   }, [provider])
