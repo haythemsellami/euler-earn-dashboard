@@ -10,49 +10,49 @@ export const SUPPORTED_NETWORKS: { [chainId: number]: NetworkConfig } = {
   1: {
     name: 'Ethereum',
     chainId: 1,
-    rpcUrl: 'https://eth-mainnet.g.alchemy.com/v2/',
+    rpcUrl: process.env.NEXT_PUBLIC_ETHEREUM_RPC_URL || '',
     blockExplorer: 'https://etherscan.io',
     isTestnet: false
   },
   137: {
     name: 'Polygon',
     chainId: 137,
-    rpcUrl: 'https://polygon-mainnet.g.alchemy.com/v2/',
+    rpcUrl: process.env.NEXT_PUBLIC_POLYGON_RPC_URL || '',
     blockExplorer: 'https://polygonscan.com',
     isTestnet: false
   },
   42161: {
     name: 'Arbitrum',
     chainId: 42161,
-    rpcUrl: 'https://arb-mainnet.g.alchemy.com/v2/',
+    rpcUrl: process.env.NEXT_PUBLIC_ARBITRUM_RPC_URL || '',
     blockExplorer: 'https://arbiscan.io',
     isTestnet: false
   },
   8453: {
     name: 'Base',
     chainId: 8453,
-    rpcUrl: 'https://base-mainnet.g.alchemy.com/v2/',
+    rpcUrl: process.env.NEXT_PUBLIC_BASE_RPC_URL || '',
     blockExplorer: 'https://basescan.org',
     isTestnet: false
   },
   1923: {
     name: 'Taiko',
     chainId: 1923,
-    rpcUrl: 'https://rpc.test.taiko.xyz',
+    rpcUrl: process.env.NEXT_PUBLIC_TAIKO_RPC_URL || '',
     blockExplorer: 'https://explorer.test.taiko.xyz',
     isTestnet: true
   },
   57073: {
     name: 'Sepolia',
     chainId: 57073,
-    rpcUrl: 'https://rpc.sepolia.org',
+    rpcUrl: process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL || '',
     blockExplorer: 'https://sepolia.etherscan.io',
     isTestnet: true
   },
   60808: {
     name: 'Taiko Testnet',
     chainId: 60808,
-    rpcUrl: 'https://rpc.test.taiko.xyz',
+    rpcUrl: process.env.NEXT_PUBLIC_TAIKO_TESTNET_RPC_URL || '',
     blockExplorer: 'https://explorer.test.taiko.xyz',
     isTestnet: true
   }

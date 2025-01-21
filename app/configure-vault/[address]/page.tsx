@@ -20,12 +20,14 @@ import { ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { useWallet } from '../../contexts/WalletContext'
 import { WalletButton } from '../../components/WalletButton'
-import { ethers } from 'ethers'
 import earnVaultABI from '@/app/abis/EulerEarn.json'
 import erc20ABI from '@/app/abis/ERC20.json'
 import { useNotification } from '@/hooks/useNotification'
 import { getExplorerAddressLink } from '../../config/explorer'
-import { useToast } from "@/components/ui/use-toast";
+import { useToast } from "@/components/ui/use-toast"
+import { useContractRead, useContractWrite, usePublicClient, useWalletClient } from 'wagmi'
+import { decodeEventLog, getContract, isAddress, zeroAddress, keccak256, toHex } from 'viem'
+import type { Address } from 'viem'
 
 const roles = [
   "DEFAULT_ADMIN_ROLE",
@@ -63,45 +65,67 @@ const generateRandomAddress = () => {
 }
 
 // Update the getRoleOwners function to fetch from contract
-const getRoleOwners = async (role: string, earnContract: ethers.Contract) => {
+const getRoleOwners = async (role: string, publicClient: any, vaultAddress: Address) => {
   try {
     // Get role hash - use 0x00 for DEFAULT_ADMIN_ROLE
     const roleHash = role === "DEFAULT_ADMIN_ROLE" ? 
       "0x0000000000000000000000000000000000000000000000000000000000000000" :  // 0x00 for DEFAULT_ADMIN_ROLE
-      ethers.id(role)
+      keccak256(toHex(role))
     
+    const vault = {
+      address: vaultAddress,
+      abi: earnVaultABI,
+    }
+
     // Get role members count
-    const memberCount = await earnContract.getRoleMemberCount(roleHash)
+    const memberCount = await publicClient.readContract({
+      ...vault,
+      functionName: 'getRoleMemberCount',
+      args: [roleHash]
+    })
     
     if (memberCount === BigInt(0)) {
-      return ['0x0000000000000000000000000000000000000000']
+      return [zeroAddress]
     }
 
     // Get all members for the role
     const owners = await Promise.all(
       Array.from({ length: Number(memberCount) }, (_, i) => 
-        earnContract.getRoleMember(roleHash, i)
+        publicClient.readContract({
+          ...vault,
+          functionName: 'getRoleMember',
+          args: [roleHash, BigInt(i)]
+        })
       )
     )
 
     return owners
   } catch (err) {
     console.error(`Error fetching owners for role ${role}:`, err)
-    return ['0x0000000000000000000000000000000000000000']
+    return [zeroAddress]
   }
 }
 
-// Add enum to match Solidity contract
-enum StrategyStatus {
-  Inactive,
-  Active,
-  Emergency
+// Add type for strategy details from contract
+type StrategyDetails = {
+  allocationPoints: bigint;
+  allocated: bigint;
+  cap: bigint;
+  status: number;
 }
 
+const StrategyStatus = {
+  Inactive: 'inactive',
+  Active: 'active',
+  Emergency: 'emergency'
+} as const;
+
+type StrategyStatus = typeof StrategyStatus[keyof typeof StrategyStatus];
+
 type Strategy = {
-  address: string;
+  address: Address;
   name: string;
-  status: 'inactive' | 'active' | 'emergency';
+  status: StrategyStatus;
   allocationPoints: bigint;
   allocated: bigint;
   assetDecimals: number;
@@ -130,16 +154,143 @@ const getTotalAllocationPoints = (strategies: Strategy[]): bigint => {
   return strategies.reduce((total: bigint, strategy: Strategy) => total + strategy.allocationPoints, BigInt(0))
 }
 
-const isCashReserve = (address: string) => {
-  return address === "0x0000000000000000000000000000000000000000";
+const isCashReserve = (address: Address) => {
+  return address === zeroAddress;
+};
+
+// Helper function to format amount with decimals
+const formatAmount = (amount: bigint, decimals: number) => {
+  // Calculate divisor using BigInt
+  let divisor = BigInt(1);
+  for (let i = 0; i < decimals; i++) {
+    divisor = divisor * BigInt(10);
+  }
+  
+  const beforeDecimal = amount / divisor
+  const afterDecimal = amount % divisor
+  
+  // Convert after decimal to string and pad with leading zeros
+  let afterDecimalStr = afterDecimal.toString();
+  // Pad with leading zeros if necessary
+  while (afterDecimalStr.length < decimals) {
+    afterDecimalStr = '0' + afterDecimalStr;
+  }
+  
+  // Trim trailing zeros after decimal
+  const trimmedAfterDecimal = afterDecimalStr.replace(/0+$/, '')
+  
+  // If there are no significant digits after decimal, return just the whole number
+  if (trimmedAfterDecimal === '') {
+    return beforeDecimal.toString()
+  }
+  
+  return `${beforeDecimal}.${trimmedAfterDecimal}`
+}
+
+// Helper function to convert amount to AmountCap uint16
+const convertToAmountCap = (amount: string, decimals: number): number => {
+  if (!amount || amount === '0') return 0 // Special case: no cap
+
+  // Calculate 10^decimals without using Math.pow
+  let decimalMultiplier = BigInt(1)
+  for (let i = 0; i < decimals; i++) {
+    decimalMultiplier = decimalMultiplier * BigInt(10)
+  }
+  
+  // Convert amount to base units (e.g., 3 USDC = 3000000)
+  const baseUnits = BigInt(Math.floor(parseFloat(amount) * Number(decimalMultiplier)))
+  
+  // Find appropriate exponent and mantissa
+  // We need: mantissa * 10^exponent / 100 = baseUnits
+  // Start with mantissa = baseUnits * 100 to account for the division in the formula
+  let mantissa = Number(baseUnits * BigInt(100))
+  let exponent = 0
+  
+  // Adjust mantissa to fit in 10 bits (max 1023)
+  while (mantissa > 1023) {
+    mantissa = Math.floor(mantissa / 10)
+    exponent++
+  }
+  
+  // Combine into uint16: mantissa in top 10 bits, exponent in bottom 6 bits
+  const result = (mantissa << 6) | exponent
+  
+  // Verify the result (for debugging)
+  const resultMantissa = result >> 6
+  const resultExponent = result & 0x3f
+  
+  // Calculate verification value using string operations to avoid BigInt/Number mixing
+  let verificationValue = BigInt(resultMantissa)
+  for (let i = 0; i < resultExponent; i++) {
+    verificationValue = verificationValue * BigInt(10)
+  }
+  verificationValue = verificationValue / BigInt(100)
+  
+  console.log('Debug Cap Conversion:', {
+    input: amount,
+    baseUnits: baseUnits.toString(),
+    mantissa,
+    exponent,
+    result,
+    resultMantissa,
+    resultExponent,
+    reconstructed: verificationValue.toString()
+  })
+  
+  return result
+}
+
+// Add function to get strategy status from number
+const getStrategyStatus = (status: number): StrategyStatus => {
+  switch (status) {
+    case 0:
+      return StrategyStatus.Inactive;
+    case 1:
+      return StrategyStatus.Active;
+    case 2:
+      return StrategyStatus.Emergency;
+    default:
+      return StrategyStatus.Inactive;
+  }
+}
+
+// Update the status display in the UI
+const getStatusDisplay = (status: StrategyStatus): { text: string; className: string } => {
+  switch (status) {
+    case StrategyStatus.Active:
+      return { text: 'Active', className: 'text-green-600' };
+    case StrategyStatus.Emergency:
+      return { text: 'Emergency', className: 'text-red-600' };
+    case StrategyStatus.Inactive:
+      return { text: 'Inactive', className: 'text-gray-600' };
+  }
+}
+
+// Update the strategy list filtering
+const getActiveStrategies = (strategies: Strategy[]) => 
+  strategies.filter(strategy => strategy.status === StrategyStatus.Active && !isCashReserve(strategy.address));
+
+// Update the strategy status checks
+const isStrategyActive = (strategy: Strategy) => strategy.status === StrategyStatus.Active;
+const isStrategyEmergency = (strategy: Strategy) => strategy.status === StrategyStatus.Emergency;
+const isStrategyInactive = (strategy: Strategy) => strategy.status === StrategyStatus.Inactive;
+
+// Update the emergency toggle button text
+const getEmergencyToggleText = (strategy: Strategy, isProcessing: boolean) => {
+  if (isProcessing) {
+    return strategy.status === StrategyStatus.Active ? 'Setting Emergency...' : 'Setting Active...';
+  }
+  return strategy.status === StrategyStatus.Active ? 'Set Emergency' : 'Set Active';
 };
 
 export default function ConfigureVault({ params: { address } }: { params: { address: string } }) {
   const { toast } = useToast();
-  const { signer, chainId } = useWallet();
-  const [roleOwners, setRoleOwners] = useState<Record<string, string[]>>({});
+  const { chainId } = useWallet();
+  const publicClient = usePublicClient()
+  const { data: walletClient } = useWalletClient()
+  const [roleOwners, setRoleOwners] = useState<Record<string, Address[]>>({});
   const [isLoadingOwners, setIsLoadingOwners] = useState(true);
-  const [selectedStrategies, setSelectedStrategies] = useState<{ id: string; order: number }[]>([]);
+  const [selectedStrategies, setSelectedStrategies] = useState<{ id: Address; order: number }[]>([]);
   const { showNotification, NotificationDialog } = useNotification()
 
   const [selectedRole, setSelectedRole] = useState<string>('')
@@ -148,39 +299,34 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   const [isProcessing, setIsProcessing] = useState<Record<string, boolean>>({})
   const [newStrategyAddress, setNewStrategyAddress] = useState('')
   const [newStrategyAllocationPoints, setNewStrategyAllocationPoints] = useState('')
-  const [adjustingStrategy, setAdjustingStrategy] = useState<string | null>(null)
+  const [adjustingStrategy, setAdjustingStrategy] = useState<Address | null>(null)
   const [newAllocationPoints, setNewAllocationPoints] = useState('')
-  const [settingCapStrategy, setSettingCapStrategy] = useState<string | null>(null)
+  const [settingCapStrategy, setSettingCapStrategy] = useState<Address | null>(null)
   const [newCap, setNewCap] = useState('')
-
-  // Remove the mock strategies state
-  const [strategies, setStrategies] = useState<Array<{id: string; name: string; status: 'active' | 'emergency'}>>([
-    { id: '1', name: "Strategy A", status: 'active' },
-    { id: '2', name: "Strategy B", status: 'active' },
-    { id: '3', name: "Strategy C", status: 'emergency' },
-    { id: '4', name: "Strategy D", status: 'active' },
-  ])
-
-  // Add new state
   const [earnStrategies, setEarnStrategies] = useState<Strategy[]>([])
-
-  // Add new state variables after other state declarations
   const [vaultName, setVaultName] = useState<string>('')
-  const [vaultAsset, setVaultAsset] = useState<{ address: string; symbol: string }>({ address: '', symbol: '' })
-
+  const [vaultAsset, setVaultAsset] = useState<{ address: Address; symbol: string }>({ address: zeroAddress, symbol: '' })
   const [availableRoles, setAvailableRoles] = useState<string[]>([])
 
   // Add function to check if an address has a role
-  const checkHasRole = async (role: string, account: string) => {
-    if (!signer || !address) return false;
+  const checkHasRole = async (role: string, account: Address) => {
+    if (!publicClient || !address) return false;
 
     try {
-      const earnContract = getEarnVaultContract(address.toString());
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
+
       const roleHash = role === "DEFAULT_ADMIN_ROLE" ? 
         "0x0000000000000000000000000000000000000000000000000000000000000000" :
-        ethers.id(role);
+        keccak256(toHex(role));
       
-      return await earnContract.hasRole(roleHash, account);
+      return await publicClient.readContract({
+        ...vault,
+        functionName: 'hasRole',
+        args: [roleHash, account]
+      });
     } catch (err) {
       console.error(`Error checking role ${role} for account ${account}:`, err);
       return false;
@@ -189,11 +335,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
   // Add function to update available roles
   const updateAvailableRoles = async () => {
-    if (!signer) return;
+    if (!walletClient || !publicClient) return;
     
     try {
-      const signerAddress = await signer.getAddress();
-      const hasDefaultAdmin = await checkHasRole("DEFAULT_ADMIN_ROLE", signerAddress);
+      const account = await walletClient.account.address;
+      const hasDefaultAdmin = await checkHasRole("DEFAULT_ADMIN_ROLE", account);
       
       const availableRoles = await Promise.all(
         roles.map(async (role) => {
@@ -206,7 +352,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
           }
           
           // For non-admin roles, check if user has the corresponding admin role
-          const hasAdminRole = await checkHasRole(adminRole, signerAddress);
+          const hasAdminRole = await checkHasRole(adminRole, account);
           return hasAdminRole ? role : null;
         })
       );
@@ -219,59 +365,110 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
   // Add effect to update available roles when signer changes
   useEffect(() => {
-    if (signer && address) {
+    if (walletClient && address) {
       updateAvailableRoles();
     }
-  }, [signer, address]);
+  }, [walletClient, address]);
 
-  // Add useEffect to fetch strategies
+  // Add effect to fetch strategies
   const fetchStrategies = async () => {
-    if (!signer || !address) return;
+    if (!publicClient || !address) return;
 
     try {
       setIsLoadingStrategies(true);
-      const earnContract = getEarnVaultContract(address.toString());
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
+
       console.log('Fetching strategies for vault:', address.toString());
 
-      const asset = await earnContract.asset();
-      const assetContract = new ethers.Contract(asset, erc20ABI, signer);
-      const assetSymbol = await assetContract.symbol();
-      const assetDecimals = await assetContract.decimals();
+      const asset = await publicClient.readContract({
+        ...vault,
+        functionName: 'asset'
+      }) as Address;
+
+      const assetContract = {
+        address: asset,
+        abi: erc20ABI,
+      }
+
+      const [assetSymbol, assetDecimals] = await Promise.all([
+        publicClient.readContract({
+          ...assetContract,
+          functionName: 'symbol'
+        }),
+        publicClient.readContract({
+          ...assetContract,
+          functionName: 'decimals'
+        })
+      ]);
+
       console.log('Asset details:', { asset, assetSymbol, assetDecimals });
 
       // Get cash reserve (address 0) details first
-      const cashReserveStrategy = await earnContract.getStrategy(ethers.ZeroAddress);
-      const totalAssetsAllocatable = await earnContract.totalAssetsAllocatable();
-      const totalAllocated = await earnContract.totalAllocated();
-      const cashReserveAllocated = totalAssetsAllocatable - totalAllocated;
+      const cashReserveStrategy = await publicClient.readContract({
+        ...vault,
+        functionName: 'getStrategy',
+        args: [zeroAddress]
+      }) as StrategyDetails;
+
+      const [totalAssetsAllocatable, totalAllocated] = await Promise.all([
+        publicClient.readContract({
+          ...vault,
+          functionName: 'totalAssetsAllocatable'
+        }),
+        publicClient.readContract({
+          ...vault,
+          functionName: 'totalAllocated'
+        })
+      ]);
+
+      const cashReserveAllocated = (totalAssetsAllocatable as bigint) - (totalAllocated as bigint);
       console.log('Cash reserve details:', {
         ...cashReserveStrategy,
         actualAllocated: cashReserveAllocated.toString()
       });
 
-      const formattedCashReserve = {
-        address: ethers.ZeroAddress,
+      const formattedCashReserve: Strategy = {
+        address: zeroAddress,
         name: "Cash Reserve",
-        status: 'active' as const,
+        status: StrategyStatus.Active,
         allocationPoints: cashReserveStrategy.allocationPoints,
         allocated: cashReserveAllocated,
-        assetDecimals,
-        assetSymbol,
+        assetDecimals: Number(assetDecimals),
+        assetSymbol: assetSymbol as string,
         cap: cashReserveStrategy.cap,
       };
 
       // Get other strategies from withdrawal queue
-      const strategyAddresses = await earnContract.withdrawalQueue();
+      const strategyAddresses = await publicClient.readContract({
+        ...vault,
+        functionName: 'withdrawalQueue'
+      }) as Address[];
+
       console.log('Strategy addresses from withdrawal queue:', strategyAddresses);
 
       const strategies = await Promise.all(
-        strategyAddresses.map(async (strategyAddress: string) => {
+        strategyAddresses.map(async (strategyAddress) => {
           console.log('Fetching details for strategy:', strategyAddress);
-          const strategyDetails = await earnContract.getStrategy(strategyAddress);
-          const strategyContract = new ethers.Contract(strategyAddress, earnVaultABI, signer);
+          const strategyDetails = await publicClient.readContract({
+            ...vault,
+            functionName: 'getStrategy',
+            args: [strategyAddress]
+          }) as StrategyDetails;
+
+          const strategyContract = {
+            address: strategyAddress,
+            abi: earnVaultABI,
+          }
+
           let name;
           try {
-            name = await strategyContract.name();
+            name = await publicClient.readContract({
+              ...strategyContract,
+              functionName: 'name'
+            }) as string;
           } catch (err) {
             console.warn('Failed to get strategy name:', err);
             name = `Strategy ${strategyAddress.slice(0, 6)}...${strategyAddress.slice(-4)}`;
@@ -289,11 +486,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
           return {
             address: strategyAddress,
             name,
-            status: Number(strategyDetails.status) === 0 ? 'inactive' : Number(strategyDetails.status) === 1 ? 'active' : 'emergency',
+            status: getStrategyStatus(Number(strategyDetails.status)),
             allocationPoints: strategyDetails.allocationPoints,
             allocated: strategyDetails.allocated,
-            assetDecimals,
-            assetSymbol,
+            assetDecimals: Number(assetDecimals),
+            assetSymbol: assetSymbol as string,
             cap: strategyDetails.cap,
           };
         })
@@ -315,53 +512,68 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
   // Add useEffect to fetch strategies
   useEffect(() => {
-    if (signer && address) {
+    if (walletClient && address) {
       fetchStrategies();
     }
-  }, [signer, address]);
+  }, [walletClient, address]);
 
   // Add useEffect to fetch role owners
   useEffect(() => {
-    if (signer && address) {
+    if (walletClient && address) {
       fetchRoleOwners();
     }
-  }, [signer, address]);
+  }, [walletClient, address]);
 
   // Add useEffect to fetch vault details
   useEffect(() => {
     const fetchVaultDetails = async () => {
-      if (!signer || !address) return;
+      if (!publicClient || !address) return;
 
       try {
-        const earnContract = getEarnVaultContract(address.toString());
+        const vault = {
+          address: address as Address,
+          abi: earnVaultABI,
+        }
+
         const [name, assetAddress] = await Promise.all([
-          earnContract.name(),
-          earnContract.asset()
+          publicClient.readContract({
+            ...vault,
+            functionName: 'name'
+          }),
+          publicClient.readContract({
+            ...vault,
+            functionName: 'asset'
+          })
         ]);
 
-        const assetContract = new ethers.Contract(assetAddress, erc20ABI, signer);
-        const assetSymbol = await assetContract.symbol();
+        const assetContract = {
+          address: assetAddress as Address,
+          abi: erc20ABI,
+        }
 
-        setVaultName(name);
-        setVaultAsset({ address: assetAddress, symbol: assetSymbol });
+        const assetSymbol = await publicClient.readContract({
+          ...assetContract,
+          functionName: 'symbol'
+        });
+
+        setVaultName(name as string);
+        setVaultAsset({ address: assetAddress as Address, symbol: assetSymbol as string });
       } catch (err) {
         console.error('Error fetching vault details:', err);
       }
     };
 
     fetchVaultDetails();
-  }, [signer, address]);
+  }, [publicClient, address]);
 
   const fetchRoleOwners = async () => {
-    if (!signer || !address) return;
+    if (!walletClient || !address) return;
 
     setIsLoadingOwners(true);
     try {
-      const earnContract = getEarnVaultContract(address.toString());
-
       const ownersMap = await Promise.all(
         roles.map(async (role) => {
-          const owners = await getRoleOwners(role, earnContract);
+          const owners = await getRoleOwners(role, publicClient, address as Address);
           return [role, owners];
         })
       );
@@ -375,25 +587,29 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   };
 
   const handleGrantRole = async () => {
-    if (!selectedRole || !newAddress || !signer || !address) return;
+    if (!selectedRole || !newAddress || !walletClient || !address) return;
 
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Get role hash - use 0x00 for DEFAULT_ADMIN_ROLE
       const roleHash = selectedRole === "DEFAULT_ADMIN_ROLE" ? 
         "0x0000000000000000000000000000000000000000000000000000000000000000" :
-        ethers.id(selectedRole)
+        keccak256(toHex(selectedRole))
 
-      const tx = await earnContract.grantRole(roleHash, newAddress)
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'grantRole',
+        args: [roleHash, newAddress as Address]
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
 
       // Refresh the role owners
-      const owners = await getRoleOwners(selectedRole, earnContract)
+      const owners = await getRoleOwners(selectedRole, publicClient!, address as Address)
       setRoleOwners(prev => ({
         ...prev,
         [selectedRole]: owners
@@ -408,25 +624,29 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   }
 
   const handleRevokeRole = async () => {
-    if (!selectedRole || !newAddress || !signer || !address) return;
+    if (!selectedRole || !newAddress || !walletClient || !address) return;
 
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Get role hash - use 0x00 for DEFAULT_ADMIN_ROLE
       const roleHash = selectedRole === "DEFAULT_ADMIN_ROLE" ? 
         "0x0000000000000000000000000000000000000000000000000000000000000000" :
-        ethers.id(selectedRole)
+        keccak256(toHex(selectedRole))
 
-      const tx = await earnContract.revokeRole(roleHash, newAddress)
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'revokeRole',
+        args: [roleHash, newAddress as Address]
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
 
       // Refresh the role owners
-      const owners = await getRoleOwners(selectedRole, earnContract)
+      const owners = await getRoleOwners(selectedRole, publicClient!, address as Address)
       setRoleOwners(prev => ({
         ...prev,
         [selectedRole]: owners
@@ -440,7 +660,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  const handleStrategySelect = (strategyAddress: string) => {
+  const handleStrategySelect = (strategyAddress: Address) => {
     setSelectedStrategies((prev) => {
       const exists = prev.find((s) => s.id === strategyAddress);
       if (exists) {
@@ -455,7 +675,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   };
 
   const handleConfirmRebalance = async () => {
-    if (!selectedStrategies.length || !signer || !address) {
+    if (!selectedStrategies.length || !walletClient || !address) {
       toast({
         title: "Error",
         description: "Please select at least one strategy to rebalance",
@@ -470,49 +690,56 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
         .sort((a, b) => a.order - b.order)
         .map(s => s.id);
 
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      );
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
-      const tx = await earnContract.rebalance(orderedAddresses);
-      await tx.wait();
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'rebalance',
+        args: [orderedAddresses]
+      })
 
-      showNotification('Success', 'Rebalance operation completed successfully', 'success');
+      await publicClient?.waitForTransactionReceipt({ hash })
+
+      showNotification('Success', 'Rebalance operation completed successfully', 'success')
 
       // Clear selection after successful rebalance
-      setSelectedStrategies([]);
+      setSelectedStrategies([])
       
       // Refresh strategies to get updated allocations
-      await fetchStrategies();
+      await fetchStrategies()
 
     } catch (error: any) {
-      console.error('Rebalance error:', error);
+      console.error('Rebalance error:', error)
       
       // Handle specific error cases
       if (error.message.toLowerCase().includes('invalid strategy order')) {
-        showNotification('Error', 'Invalid strategy order. Please check your selection.', 'error');
+        showNotification('Error', 'Invalid strategy order. Please check your selection.', 'error')
       } else if (error.message.toLowerCase().includes('strategy not active')) {
-        showNotification('Error', 'One or more selected strategies are not active.', 'error');
+        showNotification('Error', 'One or more selected strategies are not active.', 'error')
       } else {
-        showNotification('Error', 'Failed to rebalance strategies. Please try again.', 'error');
+        showNotification('Error', 'Failed to rebalance strategies. Please try again.', 'error')
       }
     }
-  };
+  }
 
   const handleHarvest = async () => {
-    if (!signer || !address) return;
+    if (!walletClient || !address) return;
 
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
-      const tx = await earnContract.harvest()
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'harvest'
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
       
       showNotification('Success', 'Harvest completed successfully', 'success')
     } catch (err: any) {
@@ -522,18 +749,21 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   }
 
   const handleGulp = async () => {
-    if (!signer || !address) return;
+    if (!walletClient || !address) return;
 
     try {
       setIsProcessing(prev => ({ ...prev, 'gulp': true }))
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
-      const tx = await earnContract.gulp()
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'gulp'
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
       
       showNotification('Success', 'Gulp completed successfully', 'success')
       
@@ -547,39 +777,34 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  // Removed: const handleAddStrategy = () => { ... }
-  // Removed: const handleRemoveStrategy = () => { ... }
-  // Removed: const handleSetEmergency = () => { ... }
-
   const handleAddStrategy = async () => {
-    if (!signer || !address || !newStrategyAddress || !newStrategyAllocationPoints) return;
+    if (!walletClient || !address || !newStrategyAddress || !newStrategyAllocationPoints) return;
     
     setIsProcessing(prev => ({ ...prev, 'add-strategy': true }))
     
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Convert allocation points to BigNumber
       const allocationPoints = BigInt(newStrategyAllocationPoints)
 
       // Call addStrategy
-      const tx = await earnContract.addStrategy(newStrategyAddress, allocationPoints)
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'addStrategy',
+        args: [newStrategyAddress as Address, allocationPoints]
+      })
       
-      // Wait for transaction confirmation
-      const receipt = await tx.wait()
+      await publicClient?.waitForTransactionReceipt({ hash })
       
-      // Check if the transaction was successful
-      if (receipt.status === 1) {
-        showNotification('Success', 'Strategy has been added successfully', 'success')
-        // Clear inputs
-        setNewStrategyAddress('')
-        setNewStrategyAllocationPoints('')
-        await fetchStrategies() // Refresh list
-      }
+      showNotification('Success', 'Strategy has been added successfully', 'success')
+      // Clear inputs
+      setNewStrategyAddress('')
+      setNewStrategyAllocationPoints('')
+      await fetchStrategies() // Refresh list
       
     } catch (err: any) {
       console.error("Error adding strategy:", err)
@@ -597,29 +822,28 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  const handleRemoveStrategy = async (strategyAddress: string) => {
-    if (!signer || !address) return;
+  const handleRemoveStrategy = async (strategyAddress: Address) => {
+    if (!walletClient || !address) return;
     
     setIsProcessing(prev => ({ ...prev, [`remove-${strategyAddress}`]: true }))
     
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Call removeStrategy
-      const tx = await earnContract.removeStrategy(strategyAddress)
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'removeStrategy',
+        args: [strategyAddress]
+      })
       
-      // Wait for transaction confirmation
-      const receipt = await tx.wait()
+      await publicClient?.waitForTransactionReceipt({ hash })
       
-      // Check if the transaction was successful
-      if (receipt.status === 1) {
-        showNotification('Success', 'Strategy has been removed successfully', 'success')
-        await fetchStrategies() // Refresh list
-      }
+      showNotification('Success', 'Strategy has been removed successfully', 'success')
+      await fetchStrategies() // Refresh list
       
     } catch (err: any) {
       console.error("Error removing strategy:", err)
@@ -635,30 +859,29 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  const handleToggleEmergencyStatus = async (strategyAddress: string) => {
-    if (!signer || !address) return;
+  const handleToggleEmergencyStatus = async (strategyAddress: Address) => {
+    if (!walletClient || !address) return;
     
     const currentStatus = earnStrategies.find(s => s.address === strategyAddress)?.status
     setIsProcessing(prev => ({ ...prev, [`toggle-${strategyAddress}`]: true }))
     
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Call toggleStrategyEmergencyStatus
-      const tx = await earnContract.toggleStrategyEmergencyStatus(strategyAddress)
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'toggleStrategyEmergencyStatus',
+        args: [strategyAddress]
+      })
       
-      // Wait for transaction confirmation
-      const receipt = await tx.wait()
+      await publicClient?.waitForTransactionReceipt({ hash })
       
-      // Check if the transaction was successful
-      if (receipt.status === 1) {
-        showNotification('Success', `Strategy emergency status has been ${currentStatus === 'active' ? 'enabled' : 'disabled'}`, 'success')
-        await fetchStrategies() // Refresh list
-      }
+      showNotification('Success', `Strategy emergency status has been ${currentStatus === 'active' ? 'enabled' : 'disabled'}`, 'success')
+      await fetchStrategies() // Refresh list
       
     } catch (err: any) {
       console.error("Error toggling strategy status:", err)
@@ -668,99 +891,16 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  // Helper function to format amount with decimals
-  const formatAmount = (amount: bigint, decimals: number) => {
-    // Calculate divisor using BigInt
-    let divisor = BigInt(1);
-    for (let i = 0; i < decimals; i++) {
-      divisor = divisor * BigInt(10);
-    }
-    
-    const beforeDecimal = amount / divisor
-    const afterDecimal = amount % divisor
-    
-    // Convert after decimal to string and pad with leading zeros
-    let afterDecimalStr = afterDecimal.toString();
-    // Pad with leading zeros if necessary
-    while (afterDecimalStr.length < decimals) {
-      afterDecimalStr = '0' + afterDecimalStr;
-    }
-    
-    // Trim trailing zeros after decimal
-    const trimmedAfterDecimal = afterDecimalStr.replace(/0+$/, '')
-    
-    // If there are no significant digits after decimal, return just the whole number
-    if (trimmedAfterDecimal === '') {
-      return beforeDecimal.toString()
-    }
-    
-    return `${beforeDecimal}.${trimmedAfterDecimal}`
-  }
-
-  // Helper function to convert amount to AmountCap uint16
-  const convertToAmountCap = (amount: string, decimals: number): number => {
-    if (!amount || amount === '0') return 0 // Special case: no cap
-
-    // Calculate 10^decimals without using Math.pow
-    let decimalMultiplier = BigInt(1)
-    for (let i = 0; i < decimals; i++) {
-      decimalMultiplier = decimalMultiplier * BigInt(10)
-    }
-    
-    // Convert amount to base units (e.g., 3 USDC = 3000000)
-    const baseUnits = BigInt(Math.floor(parseFloat(amount) * Number(decimalMultiplier)))
-    
-    // Find appropriate exponent and mantissa
-    // We need: mantissa * 10^exponent / 100 = baseUnits
-    // Start with mantissa = baseUnits * 100 to account for the division in the formula
-    let mantissa = Number(baseUnits * BigInt(100))
-    let exponent = 0
-    
-    // Adjust mantissa to fit in 10 bits (max 1023)
-    while (mantissa > 1023) {
-      mantissa = Math.floor(mantissa / 10)
-      exponent++
-    }
-    
-    // Combine into uint16: mantissa in top 10 bits, exponent in bottom 6 bits
-    const result = (mantissa << 6) | exponent
-    
-    // Verify the result (for debugging)
-    const resultMantissa = result >> 6
-    const resultExponent = result & 0x3f
-    
-    // Calculate verification value using string operations to avoid BigInt/Number mixing
-    let verificationValue = BigInt(resultMantissa)
-    for (let i = 0; i < resultExponent; i++) {
-      verificationValue = verificationValue * BigInt(10)
-    }
-    verificationValue = verificationValue / BigInt(100)
-    
-    console.log('Debug Cap Conversion:', {
-      input: amount,
-      baseUnits: baseUnits.toString(),
-      mantissa,
-      exponent,
-      result,
-      resultMantissa,
-      resultExponent,
-      reconstructed: verificationValue.toString()
-    })
-    
-    return result
-  }
-
   const handleAdjustAllocationPoints = async () => {
-    if (!signer || !address || !adjustingStrategy || !newAllocationPoints) return;
+    if (!walletClient || !address || !adjustingStrategy || !newAllocationPoints) return;
     
     setIsProcessing(prev => ({ ...prev, [`adjust-${adjustingStrategy}`]: true }))
     
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       const points = BigInt(newAllocationPoints)
       
@@ -769,8 +909,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
         throw new Error("Cash reserve allocation points cannot be set to 0")
       }
 
-      const tx = await earnContract.adjustAllocationPoints(adjustingStrategy, points)
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'adjustAllocationPoints',
+        args: [adjustingStrategy, points]
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
       
       showNotification('Success', 'Allocation points adjusted successfully', 'success')
       setAdjustingStrategy(null)
@@ -790,16 +935,15 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   }
 
   const handleSetStrategyCap = async () => {
-    if (!signer || !address || !settingCapStrategy || !newCap) return;
+    if (!walletClient || !address || !settingCapStrategy || !newCap) return;
     
     setIsProcessing(prev => ({ ...prev, [`cap-${settingCapStrategy}`]: true }))
     
     try {
-      const earnContract = new ethers.Contract(
-        address as string,
-        earnVaultABI,
-        signer
-      )
+      const vault = {
+        address: address as Address,
+        abi: earnVaultABI,
+      }
 
       // Get strategy details to know the decimals
       const strategy = earnStrategies.find(s => s.address === settingCapStrategy)
@@ -808,8 +952,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       // Convert amount to AmountCap uint16
       const capValue = convertToAmountCap(newCap, strategy.assetDecimals)
       
-      const tx = await earnContract.setStrategyCap(settingCapStrategy, capValue)
-      await tx.wait()
+      const hash = await walletClient.writeContract({
+        ...vault,
+        functionName: 'setStrategyCap',
+        args: [settingCapStrategy, capValue]
+      })
+
+      await publicClient?.waitForTransactionReceipt({ hash })
       
       showNotification('Success', 'Strategy cap set successfully', 'success')
       setSettingCapStrategy(null)
@@ -832,9 +981,12 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
   }
 
-  const getEarnVaultContract = (address: string) => {
-    if (!signer) throw new Error("No signer available");
-    return new ethers.Contract(address, earnVaultABI, signer);
+  const getEarnVaultContract = (address: Address) => {
+    if (!walletClient) throw new Error("No wallet client available");
+    return {
+      address,
+      abi: earnVaultABI,
+    };
   };
 
   return (
@@ -1038,16 +1190,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                               </div>
                             </TableCell>
                             <TableCell>
-                              <span 
-                                className={
-                                  strategy.status === 'active' 
-                                    ? 'text-green-600' 
-                                    : strategy.status === 'emergency'
-                                    ? 'text-red-600'
-                                    : 'text-gray-600'
-                                }
-                              >
-                                {strategy.status.charAt(0).toUpperCase() + strategy.status.slice(1)}
+                              <span className={getStatusDisplay(strategy.status).className}>
+                                {getStatusDisplay(strategy.status).text}
                               </span>
                             </TableCell>
                             <TableCell>
@@ -1095,7 +1239,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                                       disabled={
                                         isProcessing[`remove-${strategy.address}`] ||
                                         strategy.allocated > BigInt(0) ||
-                                        strategy.status === 'emergency'
+                                        isStrategyEmergency(strategy)
                                       }
                                     >
                                       {isProcessing[`remove-${strategy.address}`] ? 'Removing...' : 'Remove'}
@@ -1104,24 +1248,24 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                                 )}
                                 {!isCashReserve(strategy.address) && (
                                   <>
-                                    {strategy.status === 'active' && (
+                                    {isStrategyActive(strategy) && (
                                       <Button
                                         variant="destructive"
                                         size="sm"
                                         onClick={() => handleToggleEmergencyStatus(strategy.address)}
                                         disabled={isProcessing[`toggle-${strategy.address}`]}
                                       >
-                                        {isProcessing[`toggle-${strategy.address}`] ? 'Setting Emergency...' : 'Set Emergency'}
+                                        {getEmergencyToggleText(strategy, isProcessing[`toggle-${strategy.address}`])}
                                       </Button>
                                     )}
-                                    {strategy.status === 'emergency' && (
+                                    {isStrategyEmergency(strategy) && (
                                       <Button
                                         variant="outline"
                                         size="sm"
                                         onClick={() => handleToggleEmergencyStatus(strategy.address)}
                                         disabled={isProcessing[`toggle-${strategy.address}`]}
                                       >
-                                        {isProcessing[`toggle-${strategy.address}`] ? 'Setting Active...' : 'Set Active'}
+                                        {getEmergencyToggleText(strategy, isProcessing[`toggle-${strategy.address}`])}
                                       </Button>
                                     )}
                                   </>
@@ -1201,7 +1345,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
                   {earnStrategies
-                    .filter(strategy => strategy.status === 'active' && !isCashReserve(strategy.address))
+                    .filter(strategy => isStrategyActive(strategy) && !isCashReserve(strategy.address))
                     .map((strategy) => {
                       const selected = selectedStrategies.find(s => s.id === strategy.address);
                       return (
@@ -1230,7 +1374,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                         </div>
                       );
                     })}
-                  {earnStrategies.filter(strategy => strategy.status === 'active' && !isCashReserve(strategy.address)).length === 0 && (
+                  {earnStrategies.filter(strategy => isStrategyActive(strategy) && !isCashReserve(strategy.address)).length === 0 && (
                     <div className="text-center text-gray-500">
                       No active strategies available for rebalancing
                     </div>

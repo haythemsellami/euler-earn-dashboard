@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
-import { ethers } from 'ethers'
 import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,69 +16,86 @@ import factoryABI from '../abis/EulerEarnFactory.json'
 import earnVaultABI from '../abis/EulerEarn.json'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
 import { getExplorerAddressLink } from '../config/explorer'
+import { useContractRead, useContractWrite, usePublicClient, useWalletClient } from 'wagmi'
+import { createPublicClient, createWalletClient, custom, decodeEventLog, http, isAddress, parseAbiItem, zeroAddress } from 'viem'
+import type { Address, PublicClient, WalletClient } from 'viem'
 
 interface DeployedVault {
-  asset: string;
+  asset: Address;
   name: string;
-  address: string;
+  address: Address;
 }
 
 export default function DeployEulerEarn() {
-  const [deployedAddress, setDeployedAddress] = useState<string | null>(null)
+  const [deployedAddress, setDeployedAddress] = useState<Address | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [deployedVaults, setDeployedVaults] = useState<DeployedVault[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
-  const { signer, provider, chainId } = useWallet()
+  const { chainId } = useWallet()
+  const publicClient = usePublicClient()
+  const { data: walletClient } = useWalletClient()
 
   const { register, handleSubmit, formState: { errors }, reset } = useForm()
 
   const fetchDeployedVaults = async () => {
-    if (!provider || !chainId) return;
+    if (!publicClient || !chainId) return;
 
     setIsLoading(true)
     try {
       const factoryAddress = CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId]
       if (!factoryAddress) return;
 
-      const factory = new ethers.Contract(
-        factoryAddress,
-        factoryABI,
-        provider
-      )
+      // Create contract instance
+      const factory = {
+        address: factoryAddress as Address,
+        abi: factoryABI,
+      }
 
       // Get the total number of vaults
-      const length = await factory.getEulerEarnVaultsListLength()
+      const length = await publicClient.readContract({
+        ...factory,
+        functionName: 'getEulerEarnVaultsListLength'
+      })
       
       // Fetch all vaults
-      const vaultAddresses = await factory.getEulerEarnVaultsListSlice(0, length)
+      const vaultAddresses = await publicClient.readContract({
+        ...factory,
+        functionName: 'getEulerEarnVaultsListSlice',
+        args: [BigInt(0), length]
+      }) as Address[]
 
       // Fetch details for each vault
       const vaultDetails = await Promise.all(
-        vaultAddresses.map(async (address: string) => {
-          const vault = new ethers.Contract(
+        vaultAddresses.map(async (address: Address) => {
+          const vault = {
             address,
-            earnVaultABI,
-            provider
-          )
+            abi: earnVaultABI,
+          }
           
           try {
             const [name, asset] = await Promise.all([
-              vault.name(),
-              vault.asset()
+              publicClient.readContract({
+                ...vault,
+                functionName: 'name'
+              }),
+              publicClient.readContract({
+                ...vault,
+                functionName: 'asset'
+              })
             ])
             
             return {
               address,
-              name,
-              asset
+              name: name as string,
+              asset: asset as Address
             }
           } catch (err) {
             console.error(`Error fetching vault details for ${address}:`, err)
             return {
               address,
               name: 'Error loading vault',
-              asset: 'Unknown'
+              asset: zeroAddress
             }
           }
         })
@@ -97,40 +113,42 @@ export default function DeployEulerEarn() {
   // Fetch vaults when provider or chainId changes
   useEffect(() => {
     fetchDeployedVaults()
-  }, [provider, chainId])
+  }, [publicClient, chainId])
 
-  // Update the onSubmit function to refresh the list after deployment
   const onSubmit = async (data: any) => {
     setDeployedAddress(null)
     setError(null)
 
     try {
-      if (!signer) throw new Error("Please connect your wallet first")
+      if (!walletClient) throw new Error("Please connect your wallet first")
+      if (!publicClient) throw new Error("No public client available")
       if (!chainId) throw new Error("Unable to detect network")
       
       // Validate and format inputs
-      if (!ethers.isAddress(data.asset)) {
+      if (!isAddress(data.asset)) {
         throw new Error("Invalid asset address")
       }
 
       // Format parameters
       const params = {
-        asset: data.asset,
+        asset: data.asset as Address,
         name: data.name.trim(),
         symbol: data.symbol.trim(),
-        initialCashAllocationPoints: parseInt(data.initialCashAllocationPoints),
-        smearingPeriod: parseInt(data.smearingPeriod)
+        initialCashAllocationPoints: BigInt(data.initialCashAllocationPoints),
+        smearingPeriod: BigInt(data.smearingPeriod)
       }
 
       // Log the formatted parameters
       console.log("Deploying with parameters:", params)
 
       const factoryAddress = CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId]
-      const factory = new ethers.Contract(
-        factoryAddress,
-        new ethers.Interface(factoryABI),
-        signer
-      )
+      if (!factoryAddress) throw new Error("Factory not deployed on this network")
+
+      // Create contract instance
+      const factory = {
+        address: factoryAddress as Address,
+        abi: factoryABI,
+      }
 
       // Try calling view functions first to validate the asset
       try {
@@ -141,46 +159,44 @@ export default function DeployEulerEarn() {
         throw new Error("Invalid asset address or asset not supported")
       }
 
-      // Estimate gas first
-      const estimatedGas = await factory.deployEulerEarn.estimateGas(
-        params.asset,
-        params.name,
-        params.symbol,
-        params.initialCashAllocationPoints,
-        params.smearingPeriod
-      )
+      // Call the deploy function
+      const hash = await walletClient.writeContract({
+        ...factory,
+        functionName: 'deployEulerEarn',
+        args: [
+          params.asset,
+          params.name,
+          params.symbol,
+          params.initialCashAllocationPoints,
+          params.smearingPeriod
+        ]
+      })
 
-      // Add 30% buffer to gas estimate
-      const gasLimit = estimatedGas * BigInt(130) / BigInt(100)
-
-      // Call the deploy function with calculated gas limit
-      const tx = await factory.deployEulerEarn(
-        params.asset,
-        params.name,
-        params.symbol,
-        params.initialCashAllocationPoints,
-        params.smearingPeriod,
-        { gasLimit }
-      )
-
-      console.log("Transaction sent:", tx.hash)
-      const receipt = await tx.wait()
+      console.log("Transaction sent:", hash)
       
+      // Wait for transaction confirmation
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      
+      // Find the deployment event
       const deployEvent = receipt.logs
-        .map((log: any) => {
+        .find(log => {
           try {
-            return factory.interface.parseLog(log)
+            const event = decodeEventLog({
+              abi: factoryABI,
+              data: log.data,
+              topics: log.topics,
+            })
+            return event.eventName === 'DeployEulerEarn'
           } catch {
-            return null
+            return false
           }
         })
-        .find((event: any) => event && event.name === 'DeployEulerEarn')
 
       if (!deployEvent) {
         throw new Error("Could not find deployment event in transaction receipt")
       }
 
-      const newVaultAddress = deployEvent.args._eulerEarnVault
+      const newVaultAddress = deployEvent.address as Address
       setDeployedAddress(newVaultAddress)
 
       // Refresh the list of deployed vaults
@@ -193,7 +209,7 @@ export default function DeployEulerEarn() {
     }
   }
 
-  const handleConfigure = (address: string) => {
+  const handleConfigure = (address: Address) => {
     router.push(`/configure-vault/${address}`)
   }
 
@@ -203,15 +219,15 @@ export default function DeployEulerEarn() {
         <h1 className="text-2xl font-bold">Euler Earn Vault Deployment</h1>
         <WalletButton />
       </div>
-      {chainId && SUPPORTED_NETWORKS[chainId] && (
+      {chainId && SUPPORTED_NETWORKS[chainId as SupportedChainId] && (
         <Alert className="mb-4">
           <AlertTitle>Connected Network</AlertTitle>
           <AlertDescription>
-            {SUPPORTED_NETWORKS[chainId].name} {SUPPORTED_NETWORKS[chainId].isTestnet ? '(Testnet)' : ''}
+            {SUPPORTED_NETWORKS[chainId as SupportedChainId].name} {SUPPORTED_NETWORKS[chainId as SupportedChainId].isTestnet ? '(Testnet)' : ''}
           </AlertDescription>
         </Alert>
       )}
-      {chainId && !CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId] && (
+      {chainId && !CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId] && (
         <Alert variant="destructive" className="mb-4">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Network Not Supported</AlertTitle>
@@ -307,7 +323,7 @@ export default function DeployEulerEarn() {
         <Card className="w-full lg:w-1/2">
           <CardHeader>
             <CardTitle>Deployed Euler Earn Vaults</CardTitle>
-            <CardDescription>List of all deployed Euler Earn vaults on {chainId && SUPPORTED_NETWORKS[chainId]?.name}</CardDescription>
+            <CardDescription>List of all deployed Euler Earn vaults on {chainId && SUPPORTED_NETWORKS[chainId as SupportedChainId]?.name}</CardDescription>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -326,9 +342,9 @@ export default function DeployEulerEarn() {
                   {deployedVaults.map((vault, index) => (
                     <TableRow key={vault.address}>
                       <TableCell className="font-medium">
-                        {getExplorerAddressLink(chainId!, vault.asset) ? (
+                        {chainId && getExplorerAddressLink(chainId as SupportedChainId, vault.asset) ? (
                           <a 
-                            href={getExplorerAddressLink(chainId!, vault.asset)!}
+                            href={getExplorerAddressLink(chainId as SupportedChainId, vault.asset)!}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline"
@@ -341,9 +357,9 @@ export default function DeployEulerEarn() {
                       </TableCell>
                       <TableCell>{vault.name}</TableCell>
                       <TableCell>
-                        {getExplorerAddressLink(chainId!, vault.address) ? (
+                        {chainId && getExplorerAddressLink(chainId as SupportedChainId, vault.address) ? (
                           <a 
-                            href={getExplorerAddressLink(chainId!, vault.address)!}
+                            href={getExplorerAddressLink(chainId as SupportedChainId, vault.address)!}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline"

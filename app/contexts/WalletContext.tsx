@@ -1,202 +1,64 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { BrowserProvider, JsonRpcSigner, ethers } from 'ethers'
+import { createContext, useContext, ReactNode } from 'react'
+import { useAccount, useChainId, useWalletClient, useSwitchChain } from 'wagmi'
+import { createPublicClient, http, PublicClient, WalletClient } from 'viem'
 import { SUPPORTED_NETWORKS } from '../config/addresses'
+
+// Helper to create a viem Public Client
+const createViemPublicClient = (rpcUrl: string): PublicClient => {
+  return createPublicClient({
+    transport: http(rpcUrl)
+  })
+}
 
 interface WalletContextType {
   account: string | null
-  provider: BrowserProvider | null
-  signer: JsonRpcSigner | null
+  publicClient: PublicClient | null
+  walletClient: WalletClient | null
   chainId: number | null
-  connectWallet: () => Promise<void>
-  switchNetwork: (chainId: number) => Promise<void>
   isConnecting: boolean
   error: string | null
+  switchNetwork: (chainId: number) => Promise<void>
 }
 
 const WalletContext = createContext<WalletContextType>({} as WalletContextType)
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [account, setAccount] = useState<string | null>(null)
-  const [provider, setProvider] = useState<BrowserProvider | null>(null)
-  const [signer, setSigner] = useState<JsonRpcSigner | null>(null)
-  const [chainId, setChainId] = useState<number | null>(null)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { address, isConnecting: accountConnecting } = useAccount()
+  const chainId = useChainId()
+  const { data: walletClient } = useWalletClient()
+  const { switchChainAsync, error: switchError } = useSwitchChain()
 
-  const checkPreviousConnection = async () => {
+  // Create public client based on current chain
+  const publicClient = chainId && SUPPORTED_NETWORKS[chainId]?.rpcUrl
+    ? createViemPublicClient(SUPPORTED_NETWORKS[chainId].rpcUrl)
+    : null
+
+  const switchNetworkWrapper = async (targetChainId: number) => {
+    if (!switchChainAsync) return
+    if (!SUPPORTED_NETWORKS[targetChainId]) throw new Error("Unsupported network")
+    
     try {
-      // @ts-expect-error - ethereum is injected by metamask
-      if (!window.ethereum) return;
-
-      // Check if we have a stored connection
-      const wasConnected = localStorage.getItem('walletConnected') === 'true';
-      if (wasConnected) {
-        // @ts-expect-error - ethereum is injected by metamask
-        const provider = new BrowserProvider(window.ethereum);
-        const accounts = await provider.listAccounts();
-        
-        if (accounts.length > 0) {
-          const signer = await provider.getSigner();
-          const network = await provider.getNetwork();
-          const currentChainId = Number(network.chainId);
-          
-          setProvider(provider);
-          setSigner(signer);
-          setAccount(accounts[0].address);
-          setChainId(currentChainId);
-        } else {
-          // Clear stored connection if no accounts found
-          localStorage.removeItem('walletConnected');
-        }
-      }
+      await switchChainAsync({ chainId: targetChainId })
     } catch (err) {
-      console.error('Error checking previous connection:', err);
-      localStorage.removeItem('walletConnected');
-    }
-  };
-
-  useEffect(() => {
-    checkPreviousConnection();
-  }, []);
-
-  const switchNetwork = async (targetChainId: number) => {
-    setError(null)
-    try {
-      // @ts-expect-error - ethereum is injected by metamask
-      if (!window.ethereum) throw new Error("Please install MetaMask")
-      
-      const network = SUPPORTED_NETWORKS[targetChainId]
-      if (!network) throw new Error("Unsupported network")
-
-      try {
-        // Try switching to the network
-        // @ts-expect-error - ethereum is injected by metamask
-        await window.ethereum.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: `0x${targetChainId.toString(16)}` }],
-        })
-      } catch (switchError: any) {
-        // If the network is not added to MetaMask, add it
-        if (switchError.code === 4902) {
-          // @ts-expect-error - ethereum is injected by metamask
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [
-              {
-                chainId: `0x${targetChainId.toString(16)}`,
-                chainName: network.name,
-                nativeCurrency: {
-                  name: 'ETH',
-                  symbol: 'ETH',
-                  decimals: 18,
-                },
-                rpcUrls: [network.rpcUrl],
-                blockExplorerUrls: [network.blockExplorer],
-              },
-            ],
-          })
-        } else {
-          throw switchError
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to switch network")
+      console.error('Error switching network:', err)
+      throw err
     }
   }
 
-  const connectWallet = async () => {
-    setIsConnecting(true)
-    setError(null)
-    try {
-      // @ts-expect-error - ethereum is injected by metamask
-      if (!window.ethereum) {
-        throw new Error("Please install MetaMask to use this app")
-      }
-
-      // @ts-expect-error - ethereum is injected by metamask
-      const provider = new BrowserProvider(window.ethereum)
-      const accounts = await provider.send("eth_requestAccounts", [])
-      
-      const signer = await provider.getSigner()
-      const network = await provider.getNetwork()
-      const currentChainId = Number(network.chainId)
-      
-      setProvider(provider)
-      setSigner(signer)
-      setAccount(accounts[0])
-      setChainId(currentChainId)
-
-      // Store connection state
-      localStorage.setItem('walletConnected', 'true');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to connect wallet")
-      localStorage.removeItem('walletConnected');
-    }
-    setIsConnecting(false)
+  const value = {
+    account: address || null,
+    publicClient,
+    walletClient: walletClient || null,
+    chainId,
+    isConnecting: accountConnecting,
+    error: switchError?.message || null,
+    switchNetwork: switchNetworkWrapper
   }
-
-  useEffect(() => {
-    // @ts-expect-error - ethereum is injected by metamask
-    if (window.ethereum) {
-      // @ts-expect-error - ethereum is injected by metamask
-      window.ethereum.on('accountsChanged', async (accounts: string[]) => {
-        if (accounts.length > 0) {
-          setAccount(accounts[0])
-          // Refresh signer when account changes
-          if (provider) {
-            const newSigner = await provider.getSigner()
-            setSigner(newSigner)
-          }
-        } else {
-          setAccount(null)
-          setSigner(null)
-          // Clear stored connection when user disconnects
-          localStorage.removeItem('walletConnected');
-        }
-      })
-
-      // @ts-expect-error - ethereum is injected by metamask
-      window.ethereum.on('chainChanged', (_chainId: string) => {
-        window.location.reload()
-      })
-
-      // Handle disconnect
-      // @ts-expect-error - ethereum is injected by metamask
-      window.ethereum.on('disconnect', () => {
-        setAccount(null)
-        setSigner(null)
-        setProvider(null)
-        setChainId(null)
-        localStorage.removeItem('walletConnected');
-      })
-    }
-
-    return () => {
-      // @ts-expect-error - ethereum is injected by metamask
-      if (window.ethereum) {
-        // @ts-expect-error - ethereum is injected by metamask
-        window.ethereum.removeAllListeners('accountsChanged')
-        // @ts-expect-error - ethereum is injected by metamask
-        window.ethereum.removeAllListeners('chainChanged')
-        // @ts-expect-error - ethereum is injected by metamask
-        window.ethereum.removeAllListeners('disconnect')
-      }
-    }
-  }, [provider])
 
   return (
-    <WalletContext.Provider value={{
-      account,
-      provider,
-      signer,
-      chainId,
-      connectWallet,
-      switchNetwork,
-      isConnecting,
-      error
-    }}>
+    <WalletContext.Provider value={value}>
       {children}
     </WalletContext.Provider>
   )
