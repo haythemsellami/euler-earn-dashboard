@@ -11,7 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { CheckCircle2, AlertCircle, Settings } from 'lucide-react'
 import { useWallet } from '../contexts/WalletContext'
-import { WalletButton } from '../components/WalletButton'
+import { Header } from '../components/Header'
 import factoryABI from '../abis/EulerEarnFactory.json'
 import earnVaultABI from '../abis/EulerEarn.json'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
@@ -215,18 +215,7 @@ export default function DeployEulerEarn() {
 
   return (
     <div className="container mx-auto p-4">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">Euler Earn Vault Deployment</h1>
-        <WalletButton />
-      </div>
-      {chainId && SUPPORTED_NETWORKS[chainId as SupportedChainId] && (
-        <Alert className="mb-4">
-          <AlertTitle>Connected Network</AlertTitle>
-          <AlertDescription>
-            {SUPPORTED_NETWORKS[chainId as SupportedChainId].name} {SUPPORTED_NETWORKS[chainId as SupportedChainId].isTestnet ? '(Testnet)' : ''}
-          </AlertDescription>
-        </Alert>
-      )}
+      <Header />
       {chainId && !CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId] && (
         <Alert variant="destructive" className="mb-4">
           <AlertCircle className="h-4 w-4" />

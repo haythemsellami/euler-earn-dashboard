@@ -19,7 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { useWallet } from '../../contexts/WalletContext'
-import { WalletButton } from '../../components/WalletButton'
+import { Header } from '../../components/Header'
 import earnVaultABI from '@/app/abis/EulerEarn.json'
 import erc20ABI from '@/app/abis/ERC20.json'
 import { useNotification } from '@/hooks/useNotification'
@@ -991,14 +991,16 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
   return (
     <div className="container mx-auto p-4">
-      <NotificationDialog />
-      <div className="flex justify-between items-center">
-        <Link href="/deploy-euler-earn" className="inline-flex items-center mb-4 text-blue-600 hover:text-blue-800">
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Deployment
-        </Link>
-        <WalletButton />
+      <div className="flex flex-col space-y-8 mb-8">
+        <div className="flex flex-col space-y-4">
+          <Link href="/deploy-euler-earn" className="inline-flex items-center text-blue-600 hover:text-blue-800">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Dashboard
+          </Link>
+          <Header />
+        </div>
       </div>
+      <NotificationDialog />
       <Card className="mb-6">
         <CardHeader>
           <CardDescription className="space-y-2">
