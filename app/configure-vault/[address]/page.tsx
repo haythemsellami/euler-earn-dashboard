@@ -28,6 +28,7 @@ import { useToast } from "@/components/ui/use-toast"
 import { usePublicClient, useWalletClient } from 'wagmi'
 import { decodeEventLog, isAddress, zeroAddress, keccak256, toHex } from 'viem'
 import type { Address } from 'viem'
+import { ConfigGuideDialog } from '../../components/ConfigGuideDialog'
 
 const roles = [
   "DEFAULT_ADMIN_ROLE",
@@ -991,6 +992,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
   return (
     <div className="container mx-auto p-4">
+      <ConfigGuideDialog />
       <div className="flex flex-col space-y-8 mb-8">
         <div className="flex flex-col space-y-4">
           <Link href="/deploy-euler-earn" className="inline-flex items-center text-blue-600 hover:text-blue-800">
