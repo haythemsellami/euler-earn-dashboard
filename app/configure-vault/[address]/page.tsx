@@ -25,8 +25,8 @@ import erc20ABI from '@/app/abis/ERC20.json'
 import { useNotification } from '@/hooks/useNotification'
 import { getExplorerAddressLink } from '../../config/explorer'
 import { useToast } from "@/components/ui/use-toast"
-import { useContractRead, useContractWrite, usePublicClient, useWalletClient } from 'wagmi'
-import { decodeEventLog, getContract, isAddress, zeroAddress, keccak256, toHex } from 'viem'
+import { usePublicClient, useWalletClient } from 'wagmi'
+import { decodeEventLog, isAddress, zeroAddress, keccak256, toHex } from 'viem'
 import type { Address } from 'viem'
 
 const roles = [

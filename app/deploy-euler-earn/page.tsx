@@ -16,9 +16,10 @@ import factoryABI from '../abis/EulerEarnFactory.json'
 import earnVaultABI from '../abis/EulerEarn.json'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
 import { getExplorerAddressLink } from '../config/explorer'
-import { useContractRead, useContractWrite, usePublicClient, useWalletClient } from 'wagmi'
-import { createPublicClient, createWalletClient, custom, decodeEventLog, http, isAddress, parseAbiItem, zeroAddress } from 'viem'
-import type { Address, PublicClient, WalletClient } from 'viem'
+import { usePublicClient, useWalletClient } from 'wagmi'
+import { decodeEventLog, isAddress, parseAbiItem, zeroAddress } from 'viem'
+import type { Address } from 'viem'
+import { GuideDialog } from '../components/GuideDialog'
 
 interface DeployedVault {
   asset: Address;
@@ -215,6 +216,7 @@ export default function DeployEulerEarn() {
 
   return (
     <div className="container mx-auto p-4">
+      <GuideDialog />
       <Header />
       {chainId && !CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId] && (
         <Alert variant="destructive" className="mb-4">
