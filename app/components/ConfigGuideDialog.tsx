@@ -143,7 +143,7 @@ export function ConfigGuideDialog() {
               htmlFor="dontShowAgain"
               className="text-sm text-muted-foreground"
             >
-              Don't show this guide again
+              Don&apos;t show this guide again
             </label>
           </div>
         </div>
