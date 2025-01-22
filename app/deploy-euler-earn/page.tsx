@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useForm } from 'react-hook-form'
 import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
@@ -32,6 +32,7 @@ export default function DeployEulerEarn() {
   const [error, setError] = useState<string | null>(null)
   const [deployedVaults, setDeployedVaults] = useState<DeployedVault[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [lastFetchedChainId, setLastFetchedChainId] = useState<number | null>(null)
   const router = useRouter()
   const { chainId } = useWallet()
   const publicClient = usePublicClient()
@@ -39,32 +40,36 @@ export default function DeployEulerEarn() {
 
   const { register, handleSubmit, formState: { errors }, reset } = useForm()
 
-  const fetchDeployedVaults = async () => {
+  const fetchDeployedVaults = useCallback(async () => {
     if (!publicClient || !chainId) return;
+    if (chainId === lastFetchedChainId && deployedVaults.length > 0) return;
 
-    setIsLoading(true)
+    const factoryAddress = CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId];
+    if (!factoryAddress) {
+      setDeployedVaults([]);
+      return;
+    }
+
+    setIsLoading(true);
     try {
-      const factoryAddress = CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId]
-      if (!factoryAddress) return;
-
       // Create contract instance
       const factory = {
         address: factoryAddress as Address,
         abi: factoryABI,
-      }
+      };
 
       // Get the total number of vaults
       const length = await publicClient.readContract({
         ...factory,
         functionName: 'getEulerEarnVaultsListLength'
-      })
+      });
       
       // Fetch all vaults
       const vaultAddresses = await publicClient.readContract({
         ...factory,
         functionName: 'getEulerEarnVaultsListSlice',
         args: [BigInt(0), length]
-      }) as Address[]
+      }) as Address[];
 
       // Fetch details for each vault
       const vaultDetails = await Promise.all(
@@ -72,7 +77,7 @@ export default function DeployEulerEarn() {
           const vault = {
             address,
             abi: earnVaultABI,
-          }
+          };
           
           try {
             const [name, asset] = await Promise.all([
@@ -84,37 +89,53 @@ export default function DeployEulerEarn() {
                 ...vault,
                 functionName: 'asset'
               })
-            ])
+            ]);
             
             return {
               address,
               name: name as string,
               asset: asset as Address
-            }
+            };
           } catch (err) {
-            console.error(`Error fetching vault details for ${address}:`, err)
+            console.error(`Error fetching vault details for ${address}:`, err);
             return {
               address,
               name: 'Error loading vault',
               asset: zeroAddress
-            }
+            };
           }
         })
-      )
+      );
 
-      setDeployedVaults(vaultDetails)
+      setDeployedVaults(vaultDetails);
+      setLastFetchedChainId(chainId);
     } catch (err) {
-      console.error('Error fetching vaults:', err)
-      setError('Failed to load deployed vaults')
+      console.error('Error fetching vaults:', err);
+      setError('Failed to load deployed vaults');
+      setDeployedVaults([]);
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  }, [publicClient, chainId, lastFetchedChainId, deployedVaults.length]);
 
-  // Fetch vaults when provider or chainId changes
   useEffect(() => {
-    fetchDeployedVaults()
-  }, [publicClient, chainId])
+    if (!chainId) {
+      setDeployedVaults([]);
+      setLastFetchedChainId(null);
+      return;
+    }
+
+    if (chainId !== lastFetchedChainId) {
+      fetchDeployedVaults();
+    }
+  }, [chainId, lastFetchedChainId, fetchDeployedVaults]);
+
+  // Add a separate effect for initial load
+  useEffect(() => {
+    if (publicClient && chainId && !lastFetchedChainId) {
+      fetchDeployedVaults();
+    }
+  }, [publicClient, chainId, lastFetchedChainId, fetchDeployedVaults]);
 
   const onSubmit = async (data: any) => {
     setDeployedAddress(null)

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -335,44 +335,36 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   };
 
   // Add function to update available roles
-  const updateAvailableRoles = async () => {
-    if (!walletClient || !publicClient) return;
-    
+  const updateAvailableRoles = useCallback(async () => {
+    if (!walletClient || !address) return;
+
     try {
-      const account = await walletClient.account.address;
-      const hasDefaultAdmin = await checkHasRole("DEFAULT_ADMIN_ROLE", account);
-      
       const availableRoles = await Promise.all(
-        roles.map(async (role) => {
-          const adminRole = roleToAdminRole[role];
-          if (!adminRole) return null;
-          
-          // If it's an admin role, check for DEFAULT_ADMIN_ROLE
-          if (role.endsWith("_ADMIN")) {
-            return hasDefaultAdmin ? role : null;
-          }
-          
-          // For non-admin roles, check if user has the corresponding admin role
-          const hasAdminRole = await checkHasRole(adminRole, account);
-          return hasAdminRole ? role : null;
+        Object.values(roles).map(async (role) => {
+          const hasRole = await checkHasRole(role, walletClient.account.address);
+          return { role, hasRole };
         })
       );
-      
-      setAvailableRoles(availableRoles.filter((role): role is string => role !== null));
-    } catch (err) {
-      console.error('Error updating available roles:', err);
+
+      setAvailableRoles(
+        availableRoles
+          .filter(({ hasRole }) => hasRole)
+          .map(({ role }) => role)
+      );
+    } catch (error) {
+      console.error('Error checking roles:', error);
     }
-  };
+  }, [walletClient, address]);
 
   // Add effect to update available roles when signer changes
   useEffect(() => {
     if (walletClient && address) {
       updateAvailableRoles();
     }
-  }, [walletClient, address]);
+  }, [walletClient, address, updateAvailableRoles]);
 
   // Add effect to fetch strategies
-  const fetchStrategies = async () => {
+  const fetchStrategies = useCallback(async () => {
     if (!publicClient || !address) return;
 
     try {
@@ -509,21 +501,41 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } finally {
       setIsLoadingStrategies(false);
     }
-  };
+  }, [publicClient, address]);
 
   // Add useEffect to fetch strategies
   useEffect(() => {
     if (walletClient && address) {
       fetchStrategies();
     }
-  }, [walletClient, address]);
+  }, [walletClient, address, fetchStrategies]);
 
   // Add useEffect to fetch role owners
+  const fetchRoleOwners = useCallback(async () => {
+    if (!publicClient || !address) return;
+
+    setIsLoadingOwners(true);
+    try {
+      const ownersMap = await Promise.all(
+        roles.map(async (role) => {
+          const owners = await getRoleOwners(role, publicClient, address as Address);
+          return [role, owners];
+        })
+      );
+
+      setRoleOwners(Object.fromEntries(ownersMap));
+    } catch (err) {
+      console.error('Error fetching role owners:', err);
+    } finally {
+      setIsLoadingOwners(false);
+    }
+  }, [publicClient, address]);
+
   useEffect(() => {
-    if (walletClient && address) {
+    if (publicClient && address) {
       fetchRoleOwners();
     }
-  }, [walletClient, address]);
+  }, [publicClient, address, fetchRoleOwners]);
 
   // Add useEffect to fetch vault details
   useEffect(() => {
@@ -566,26 +578,6 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
 
     fetchVaultDetails();
   }, [publicClient, address]);
-
-  const fetchRoleOwners = async () => {
-    if (!walletClient || !address) return;
-
-    setIsLoadingOwners(true);
-    try {
-      const ownersMap = await Promise.all(
-        roles.map(async (role) => {
-          const owners = await getRoleOwners(role, publicClient, address as Address);
-          return [role, owners];
-        })
-      );
-
-      setRoleOwners(Object.fromEntries(ownersMap));
-    } catch (err) {
-      console.error('Error fetching role owners:', err);
-    } finally {
-      setIsLoadingOwners(false);
-    }
-  };
 
   const handleGrantRole = async () => {
     if (!selectedRole || !newAddress || !walletClient || !address) return;
