@@ -2,38 +2,20 @@ import { getDefaultConfig, type Chain as RainbowChain } from '@rainbow-me/rainbo
 import { SUPPORTED_NETWORKS } from './addresses'
 import { http, type Chain } from 'viem'
 import { type Config, createConfig } from 'wagmi'
-import { mainnet, sepolia, type Chain as WagmiChain } from 'wagmi/chains'
+import { mainnet, base, arbitrum } from 'wagmi/chains'
 
 // Convert supported networks to wagmi chains
 const customChains = Object.entries(SUPPORTED_NETWORKS).reduce<Chain[]>((acc, [chainId, network]) => {
-  // Skip mainnet and sepolia as they're included from wagmi/chains
-  if (parseInt(chainId) === mainnet.id || parseInt(chainId) === sepolia.id) {
+  const chainIdNum = parseInt(chainId)
+  // Skip mainnet, base and arbitrum as they're included from wagmi/chains
+  if (chainIdNum === 1 || chainIdNum === 8453 || chainIdNum === 42161) {
     return acc
   }
-  
-  acc.push({
-    id: parseInt(chainId),
-    name: network.name,
-    network: network.name.toLowerCase(),
-    nativeCurrency: {
-      decimals: 18,
-      name: 'Ether',
-      symbol: 'ETH',
-    },
-    rpcUrls: {
-      default: { http: [network.rpcUrl] },
-      public: { http: [network.rpcUrl] },
-    },
-    blockExplorers: {
-      default: { name: 'Explorer', url: network.blockExplorer },
-    },
-    testnet: network.isTestnet
-  })
   return acc
 }, [])
 
 // Combine predefined chains with custom chains
-const chains = [mainnet, sepolia, ...customChains]
+const chains = [mainnet, base, arbitrum, ...customChains]
 
 const config = getDefaultConfig({
   appName: 'Euler Earn',
