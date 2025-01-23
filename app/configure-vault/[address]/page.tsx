@@ -593,6 +593,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
         "0x0000000000000000000000000000000000000000000000000000000000000000" :
         keccak256(toHex(selectedRole))
 
+      setIsProcessing(prev => ({ ...prev, 'grant-role': true }))
+
       const hash = await walletClient.writeContract({
         ...vault,
         functionName: 'grantRole',
@@ -613,6 +615,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (err: any) {
       console.error('Error granting role:', err)
       showNotification('Error', `Failed to grant role: ${err.message}`, 'error')
+    } finally {
+      setIsProcessing(prev => ({ ...prev, 'grant-role': false }))
     }
   }
 
@@ -629,6 +633,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       const roleHash = selectedRole === "DEFAULT_ADMIN_ROLE" ? 
         "0x0000000000000000000000000000000000000000000000000000000000000000" :
         keccak256(toHex(selectedRole))
+
+      setIsProcessing(prev => ({ ...prev, 'revoke-role': true }))
 
       const hash = await walletClient.writeContract({
         ...vault,
@@ -650,6 +656,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (err: any) {
       console.error('Error revoking role:', err)
       showNotification('Error', `Failed to revoke role: ${err.message}`, 'error')
+    } finally {
+      setIsProcessing(prev => ({ ...prev, 'revoke-role': false }))
     }
   }
 
@@ -678,6 +686,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     }
 
     try {
+      setIsProcessing(prev => ({ ...prev, 'rebalance': true }))
+
       // Sort by order and get addresses
       const orderedAddresses = selectedStrategies
         .sort((a, b) => a.order - b.order)
@@ -715,6 +725,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       } else {
         showNotification('Error', 'Failed to rebalance strategies. Please try again.', 'error')
       }
+    } finally {
+      setIsProcessing(prev => ({ ...prev, 'rebalance': false }))
     }
   }
 
@@ -722,6 +734,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     if (!walletClient || !address) return;
 
     try {
+      setIsProcessing(prev => ({ ...prev, 'harvest': true }))
+
       const vault = {
         address: address as Address,
         abi: earnVaultABI,
@@ -738,6 +752,8 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (err: any) {
       console.error("Error during harvest:", err)
       showNotification('Error', `Harvest failed: ${err.message}`, 'error')
+    } finally {
+      setIsProcessing(prev => ({ ...prev, 'harvest': false }))
     }
   }
 
@@ -1113,8 +1129,33 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
               </div>
             </div>
             <div className="flex justify-end space-x-2">
-              <Button onClick={handleGrantRole}>Grant Role</Button>
-              <Button onClick={handleRevokeRole} variant="outline">Revoke Role</Button>
+              <Button 
+                onClick={handleGrantRole} 
+                disabled={isProcessing['grant-role']}
+              >
+                {isProcessing['grant-role'] ? (
+                  <>
+                    <span className="mr-2">Granting Role...</span>
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                  </>
+                ) : (
+                  'Grant Role'
+                )}
+              </Button>
+              <Button 
+                onClick={handleRevokeRole} 
+                variant="outline"
+                disabled={isProcessing['revoke-role']}
+              >
+                {isProcessing['revoke-role'] ? (
+                  <>
+                    <span className="mr-2">Revoking Role...</span>
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                  </>
+                ) : (
+                  'Revoke Role'
+                )}
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -1290,6 +1331,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                       placeholder="Strategy Address"
                       value={newStrategyAddress}
                       onChange={(e) => setNewStrategyAddress(e.target.value)}
+                      disabled={isProcessing['add-strategy']}
                     />
                   </div>
                   <div>
@@ -1299,6 +1341,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                       min="0"
                       value={newStrategyAllocationPoints}
                       onChange={(e) => setNewStrategyAllocationPoints(e.target.value)}
+                      disabled={isProcessing['add-strategy']}
                     />
                   </div>
                   <div className="col-span-3">
@@ -1311,7 +1354,14 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                         !newStrategyAllocationPoints
                       }
                     >
-                      {isProcessing['add-strategy'] ? 'Adding Strategy...' : 'Add Strategy'}
+                      {isProcessing['add-strategy'] ? (
+                        <>
+                          <span className="mr-2">Adding Strategy...</span>
+                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                        </>
+                      ) : (
+                        'Add Strategy'
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -1330,7 +1380,16 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
           <div className="flex space-x-4">
             <Dialog>
               <DialogTrigger asChild>
-                <Button>Rebalance</Button>
+                <Button disabled={isProcessing['rebalance']}>
+                  {isProcessing['rebalance'] ? (
+                    <>
+                      <span className="mr-2">Rebalancing...</span>
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                    </>
+                  ) : (
+                    'Rebalance'
+                  )}
+                </Button>
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
@@ -1386,12 +1445,31 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            <Button onClick={handleHarvest}>Harvest</Button>
+            <Button 
+              onClick={handleHarvest}
+              disabled={isProcessing['harvest']}
+            >
+              {isProcessing['harvest'] ? (
+                <>
+                  <span className="mr-2">Harvesting...</span>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                </>
+              ) : (
+                'Harvest'
+              )}
+            </Button>
             <Button 
               onClick={handleGulp}
               disabled={isProcessing['gulp']}
             >
-              {isProcessing['gulp'] ? 'Processing...' : 'Gulp'}
+              {isProcessing['gulp'] ? (
+                <>
+                  <span className="mr-2">Processing...</span>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                </>
+              ) : (
+                'Gulp'
+              )}
             </Button>
           </div>
         </CardContent>
@@ -1413,6 +1491,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
               min="0"
               value={newAllocationPoints}
               onChange={(e) => setNewAllocationPoints(e.target.value)}
+              disabled={isProcessing[`adjust-${adjustingStrategy}`]}
             />
           </div>
           <DialogFooter>
@@ -1420,7 +1499,14 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
               onClick={handleAdjustAllocationPoints}
               disabled={isProcessing[`adjust-${adjustingStrategy}`]}
             >
-              {isProcessing[`adjust-${adjustingStrategy}`] ? 'Adjusting...' : 'Confirm'}
+              {isProcessing[`adjust-${adjustingStrategy}`] ? (
+                <>
+                  <span className="mr-2">Adjusting...</span>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                </>
+              ) : (
+                'Confirm'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1443,6 +1529,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
               step="any"
               value={newCap}
               onChange={(e) => setNewCap(e.target.value)}
+              disabled={isProcessing[`cap-${settingCapStrategy}`]}
             />
           </div>
           <DialogFooter>
@@ -1450,7 +1537,14 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
               onClick={handleSetStrategyCap}
               disabled={isProcessing[`cap-${settingCapStrategy}`]}
             >
-              {isProcessing[`cap-${settingCapStrategy}`] ? 'Setting Cap...' : 'Confirm'}
+              {isProcessing[`cap-${settingCapStrategy}`] ? (
+                <>
+                  <span className="mr-2">Setting Cap...</span>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                </>
+              ) : (
+                'Confirm'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

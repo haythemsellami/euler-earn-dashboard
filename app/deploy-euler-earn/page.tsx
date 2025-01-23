@@ -120,10 +120,6 @@ export default function DeployEulerEarn() {
           params.smearingPeriod
         ]
       })
-
-      if (isDeployed) {
-        reset()
-      }
     } catch (err: any) {
       console.error("Full error:", err)
       setError(err.message || "Failed to deploy vault")
@@ -208,11 +204,29 @@ export default function DeployEulerEarn() {
                 />
                 {errors.smearingPeriod && <p className="text-red-500 text-sm mt-1">{errors.smearingPeriod.message as string}</p>}
               </div>
-              <Button type="submit" className="w-full">Deploy Euler Earn Vault</Button>
+              <Button type="submit" className="w-full" disabled={isDeploying}>
+                {isDeploying ? (
+                  <>
+                    <span className="mr-2">Deploying Vault...</span>
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
+                  </>
+                ) : (
+                  'Deploy Euler Earn Vault'
+                )}
+              </Button>
             </form>
           </CardContent>
           <CardFooter>
-            {deployedAddress && (
+            {isDeploying && (
+              <Alert>
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent mr-2" />
+                <AlertTitle>Deploying</AlertTitle>
+                <AlertDescription>
+                  Deploying your Euler Earn vault...
+                </AlertDescription>
+              </Alert>
+            )}
+            {isDeployed && deployedAddress && (
               <Alert className="w-full">
                 <CheckCircle2 className="h-4 w-4" />
                 <AlertTitle>Success</AlertTitle>
