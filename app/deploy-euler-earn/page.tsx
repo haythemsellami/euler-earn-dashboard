@@ -12,8 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { CheckCircle2, AlertCircle, Settings } from 'lucide-react'
 import { useWallet } from '../contexts/WalletContext'
 import { Header } from '../components/Header'
-import factoryABI from '../abis/EulerEarnFactory.json'
-import earnVaultABI from '../abis/EulerEarn.json'
+import { factoryABI } from '../abis/EulerEarnFactory'
+import { earnVaultABI } from '../abis/EulerEarn'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
 import { getExplorerAddressLink } from '../config/explorer'
 import { useChainId, useReadContract, useReadContracts, useWriteContract, useWatchContractEvent } from 'wagmi'
@@ -28,7 +28,7 @@ interface DeployedVault {
 
 export default function DeployEulerEarn() {
   const [deployedAddress, setDeployedAddress] = useState<Address | null>(null)
-  const [error, setError] = useState<string | undefined>(null)
+  const [error, setError] = useState<string | undefined>(undefined)
   const router = useRouter()
   const chainId = useChainId()
 
@@ -37,14 +37,14 @@ export default function DeployEulerEarn() {
   // Read the list of vaults
   const { data: vaultListLength } = useReadContract({
     address: factoryAddress,
-    abi: factoryABI as const,
+    abi: factoryABI,
     functionName: 'getEulerEarnVaultsListLength'
   })
 
   // Read vault addresses
   const { data: vaultAddresses } = useReadContract({
     address: factoryAddress,
-    abi: factoryABI as const,
+    abi: factoryABI,
     functionName: 'getEulerEarnVaultsListSlice',
     args: vaultListLength ? [BigInt(0), vaultListLength] : undefined
   })
@@ -54,14 +54,14 @@ export default function DeployEulerEarn() {
     contracts: (vaultAddresses as Address[] || []).map((address) => ([
       {
         address,
-        abi: earnVaultABI as const,
+        abi: earnVaultABI,
         functionName: 'name'
-      } as const,
+      },
       {
         address,
-        abi: earnVaultABI as const,
+        abi: earnVaultABI,
         functionName: 'asset'
-      } as const
+      }
     ])).flat()
   })
 
@@ -79,7 +79,7 @@ export default function DeployEulerEarn() {
   // Watch for deployment events
   useWatchContractEvent({
     address: factoryAddress,
-    abi: factoryABI as const,
+    abi: factoryABI,
     eventName: 'DeployEulerEarn',
     onLogs(logs) {
       if (logs[0]) {
@@ -110,7 +110,7 @@ export default function DeployEulerEarn() {
 
       deployVault({
         address: factoryAddress,
-        abi: factoryABI as const,
+        abi: factoryABI,
         functionName: 'deployEulerEarn',
         args: [
           params.asset,
