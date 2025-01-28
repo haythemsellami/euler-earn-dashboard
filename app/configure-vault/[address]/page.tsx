@@ -614,7 +614,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       showNotification('Success', `Role ${selectedRole} granted to ${newAddress}`, 'success')
     } catch (err: any) {
       console.error('Error granting role:', err)
-      showNotification('Error', `Failed to grant role: ${err.message}`, 'error')
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else {
+        showNotification('Error', `Failed to grant role: ${err.message}`, 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, 'grant-role': false }))
     }
@@ -655,7 +661,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       showNotification('Success', `Role ${selectedRole} revoked from ${newAddress}`, 'success')
     } catch (err: any) {
       console.error('Error revoking role:', err)
-      showNotification('Error', `Failed to revoke role: ${err.message}`, 'error')
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else {
+        showNotification('Error', `Failed to revoke role: ${err.message}`, 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, 'revoke-role': false }))
     }
@@ -717,8 +729,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (error: any) {
       console.error('Rebalance error:', error)
       
-      // Handle specific error cases
-      if (error.message.toLowerCase().includes('invalid strategy order')) {
+      if (error.message.toLowerCase().includes('user rejected') || 
+          error.message.toLowerCase().includes('user denied') ||
+          error.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else if (error.message.toLowerCase().includes('invalid strategy order')) {
         showNotification('Error', 'Invalid strategy order. Please check your selection.', 'error')
       } else if (error.message.toLowerCase().includes('strategy not active')) {
         showNotification('Error', 'One or more selected strategies are not active.', 'error')
@@ -751,7 +766,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       showNotification('Success', 'Harvest completed successfully', 'success')
     } catch (err: any) {
       console.error("Error during harvest:", err)
-      showNotification('Error', `Harvest failed: ${err.message}`, 'error')
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else {
+        showNotification('Error', `Harvest failed: ${err.message}`, 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, 'harvest': false }))
     }
@@ -780,7 +801,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       await fetchStrategies()
     } catch (err: any) {
       console.error("Error during gulp:", err)
-      showNotification('Error', `Gulp failed: ${err.message}`, 'error')
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else {
+        showNotification('Error', `Gulp failed: ${err.message}`, 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, 'gulp': false }))
     }
@@ -818,8 +845,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (err: any) {
       console.error("Error adding strategy:", err)
       
-      // Check for specific error messages in the revert
-      if (err.message.toLowerCase().includes("strategy already exists")) {
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else if (err.message.toLowerCase().includes("strategy already exists")) {
         showNotification('Error', 'This strategy has already been added to the vault.', 'error')
       } else if (err.message.toLowerCase().includes("invalid strategy")) {
         showNotification('Error', 'Invalid strategy address. Please check the address and try again.', 'error')
@@ -857,8 +887,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
     } catch (err: any) {
       console.error("Error removing strategy:", err)
       
-      // Check for specific error messages in the revert
-      if (err.message.toLowerCase().includes("strategy has funds")) {
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else if (err.message.toLowerCase().includes("strategy has funds")) {
         showNotification('Error', 'Cannot remove strategy while it has allocated funds. Please rebalance to remove all funds first.', 'error')
       } else {
         showNotification('Error', 'Failed to remove strategy. Please try again.', 'error')
@@ -894,7 +927,13 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       
     } catch (err: any) {
       console.error("Error toggling strategy status:", err)
-      showNotification('Error', 'Failed to toggle strategy emergency status. Please try again.', 'error')
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else {
+        showNotification('Error', 'Failed to toggle strategy emergency status. Please try again.', 'error')
+      }
     } finally {
       setIsProcessing(prev => ({ ...prev, [`toggle-${strategyAddress}`]: false }))
     }
@@ -933,7 +972,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       
     } catch (err: any) {
       console.error("Error adjusting allocation points:", err)
-      if (err.message.includes("Cash reserve allocation points cannot be set to 0")) {
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else if (err.message.includes("Cash reserve allocation points cannot be set to 0")) {
         showNotification('Error', 'Cash reserve allocation points cannot be set to 0', 'error')
       } else {
         showNotification('Error', 'Failed to adjust allocation points. Please try again.', 'error')
@@ -976,7 +1019,11 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       
     } catch (err: any) {
       console.error("Error setting strategy cap:", err)
-      if (err.message.toLowerCase().includes("strategy should be active")) {
+      if (err.message.toLowerCase().includes('user rejected') || 
+          err.message.toLowerCase().includes('user denied') ||
+          err.message.toLowerCase().includes('rejected the request')) {
+        showNotification('Error', 'Transaction was not signed', 'error')
+      } else if (err.message.toLowerCase().includes("strategy should be active")) {
         showNotification('Error', 'Strategy must be active to set cap', 'error')
       } else if (err.message.toLowerCase().includes("no cap on cash reserve")) {
         showNotification('Error', 'Cannot set cap on cash reserve strategy', 'error')
@@ -1297,10 +1344,10 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                                     )}
                                     {isStrategyEmergency(strategy) && (
                                       <Button
-                                        variant="outline"
                                         size="sm"
                                         onClick={() => handleToggleEmergencyStatus(strategy.address)}
                                         disabled={isProcessing[`toggle-${strategy.address}`]}
+                                        className="bg-green-600 hover:bg-green-700 text-white"
                                       >
                                         {getEmergencyToggleText(strategy, isProcessing[`toggle-${strategy.address}`])}
                                       </Button>

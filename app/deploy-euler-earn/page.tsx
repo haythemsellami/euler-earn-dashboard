@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
@@ -12,13 +12,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { CheckCircle2, AlertCircle, Settings } from 'lucide-react'
 import { useWallet } from '../contexts/WalletContext'
 import { Header } from '../components/Header'
-import { factoryABI } from '../abis/EulerEarnFactory'
-import { earnVaultABI } from '../abis/EulerEarn'
+import factoryABI from '../abis/EulerEarnFactory.json'
+import earnVaultABI from '../abis/EulerEarn.json'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
 import { getExplorerAddressLink } from '../config/explorer'
 import { useChainId, useReadContract, useReadContracts, useWriteContract, useWatchContractEvent } from 'wagmi'
 import { isAddress, zeroAddress, type Address } from 'viem'
 import { GuideDialog } from '../components/GuideDialog'
+import { usePublicClient } from 'wagmi'
+import erc20ABI from '../abis/ERC20.json'
 
 interface DeployedVault {
   asset: Address;
@@ -31,6 +33,7 @@ export default function DeployEulerEarn() {
   const [error, setError] = useState<string | undefined>(undefined)
   const router = useRouter()
   const chainId = useChainId()
+  const publicClient = usePublicClient()
 
   const factoryAddress = chainId ? (CONTRACT_ADDRESSES.EULER_EARN_FACTORY[chainId as SupportedChainId] as Address) : undefined
 
@@ -74,7 +77,7 @@ export default function DeployEulerEarn() {
     })) : []
 
   // Deploy contract write
-  const { writeContract: deployVault, isPending: isDeploying, isSuccess: isDeployed } = useWriteContract()
+  const { writeContract: deployVault, isPending: isDeploying, isSuccess: isDeployed, error: deployError } = useWriteContract()
 
   // Watch for deployment events
   useWatchContractEvent({
@@ -88,6 +91,26 @@ export default function DeployEulerEarn() {
     }
   })
 
+  useEffect(() => {
+    if (deployError) {
+      console.error('Deployment error:', deployError)
+      // Check for specific error messages
+      if (deployError.message.toLowerCase().includes('user rejected') || 
+          deployError.message.toLowerCase().includes('user denied') ||
+          deployError.message.toLowerCase().includes('rejected the request')) {
+        setError('Transaction was not signed')
+      } else if (deployError.message.toLowerCase().includes('invalid asset')) {
+        setError('Invalid asset address. Please check the address and try again.')
+      } else if (deployError.message.toLowerCase().includes('invalid allocation points')) {
+        setError('Invalid initial cash allocation points. Must be greater than 0.')
+      } else if (deployError.message.toLowerCase().includes('invalid smearing period')) {
+        setError('Invalid smearing period. Must be greater than 0.')
+      } else {
+        setError(deployError.message || 'Failed to deploy vault')
+      }
+    }
+  }, [deployError])
+
   const { register, handleSubmit, formState: { errors }, reset } = useForm()
 
   const onSubmit = async (data: any) => {
@@ -98,6 +121,41 @@ export default function DeployEulerEarn() {
       if (!chainId) throw new Error("Unable to detect network")
       if (!isAddress(data.asset)) throw new Error("Invalid asset address")
       if (!factoryAddress) throw new Error("Factory not deployed on this network")
+      if (!publicClient) throw new Error("No public client available")
+      
+      // Validate parameters
+      if (data.initialCashAllocationPoints <= 0) {
+        throw new Error("Initial cash allocation points must be greater than 0")
+      }
+      if (data.smearingPeriod < 86400) {
+        throw new Error("Smearing period must be at least 86400 seconds (1 day)")
+      }
+
+      // Validate ERC20 token
+      try {
+        const assetAddress = data.asset as Address
+        const [decimals, symbol] = await Promise.all([
+          publicClient.readContract({
+            address: assetAddress,
+            abi: erc20ABI,
+            functionName: 'decimals'
+          }),
+          publicClient.readContract({
+            address: assetAddress,
+            abi: erc20ABI,
+            functionName: 'symbol'
+          })
+        ])
+        console.log('Asset token details:', { decimals, symbol })
+      } catch (err: any) {
+        console.error('Error validating ERC20 token:', err)
+        if (err.message.toLowerCase().includes('user rejected') || 
+            err.message.toLowerCase().includes('user denied') ||
+            err.message.toLowerCase().includes('rejected the request')) {
+          throw new Error("Transaction was not signed")
+        }
+        throw new Error("Invalid ERC20 token. Please check the address and try again.")
+      }
       
       // Format parameters
       const params = {
@@ -105,8 +163,28 @@ export default function DeployEulerEarn() {
         name: data.name.trim(),
         symbol: data.symbol.trim(),
         initialCashAllocationPoints: BigInt(data.initialCashAllocationPoints),
-        smearingPeriod: BigInt(data.smearingPeriod)
+        smearingPeriod: Number(data.smearingPeriod)
       }
+
+      // Validate name and symbol
+      if (params.name.length === 0) {
+        throw new Error("Vault name cannot be empty")
+      }
+      if (params.symbol.length === 0) {
+        throw new Error("Vault symbol cannot be empty")
+      }
+      // Validate smearing period fits in uint24
+      if (params.smearingPeriod > 16777215) { // 2^24 - 1
+        throw new Error("Smearing period too large. Maximum value is 16777215 seconds (~194 days)")
+      }
+
+      console.log('Deploying vault with params:', {
+        asset: params.asset,
+        name: params.name,
+        symbol: params.symbol,
+        initialCashAllocationPoints: params.initialCashAllocationPoints.toString(),
+        smearingPeriod: params.smearingPeriod.toString()
+      })
 
       deployVault({
         address: factoryAddress,
@@ -198,11 +276,16 @@ export default function DeployEulerEarn() {
                   type="number"
                   {...register("smearingPeriod", { 
                     required: "Smearing period is required",
-                    min: { value: 0, message: "Must be non-negative" }
+                    min: { value: 86400, message: "Must be at least 86400 seconds (1 day)" },
+                    max: { value: 16777215, message: "Must not exceed 16777215 seconds (~194 days)" }
                   })}
-                  placeholder="1209600"
+                  placeholder="86400"
                 />
                 {errors.smearingPeriod && <p className="text-red-500 text-sm mt-1">{errors.smearingPeriod.message as string}</p>}
+                <p className="text-sm text-gray-500 mt-1">
+                  Minimum: 86400 seconds (1 day)<br />
+                  Maximum: 16777215 seconds (~194 days)
+                </p>
               </div>
               <Button type="submit" className="w-full" disabled={isDeploying}>
                 {isDeploying ? (
