@@ -17,7 +17,7 @@ import earnVaultABI from '../abis/EulerEarn.json'
 import { CONTRACT_ADDRESSES, SUPPORTED_NETWORKS, SupportedChainId } from '../config/addresses'
 import { getExplorerAddressLink } from '../config/explorer'
 import { useChainId, useReadContract, useReadContracts, useWriteContract, useWatchContractEvent } from 'wagmi'
-import { isAddress, zeroAddress, type Address } from 'viem'
+import { isAddress, zeroAddress, type Address, type Abi } from 'viem'
 import { GuideDialog } from '../components/GuideDialog'
 import { usePublicClient } from 'wagmi'
 import erc20ABI from '../abis/ERC20.json'
@@ -50,30 +50,30 @@ export default function DeployEulerEarn() {
     abi: factoryABI,
     functionName: 'getEulerEarnVaultsListSlice',
     args: vaultListLength ? [BigInt(0), vaultListLength] : undefined
-  })
+  }) as { data: Address[] | undefined }
 
   // Read vault details
   const { data: vaultDetails } = useReadContracts({
-    contracts: (vaultAddresses as Address[] || []).map((address) => ([
+    contracts: (vaultAddresses || []).flatMap((address: Address) => [
       {
         address,
-        abi: earnVaultABI,
-        functionName: 'name'
+        abi: earnVaultABI as Abi,
+        functionName: 'name',
       },
       {
         address,
-        abi: earnVaultABI,
-        functionName: 'asset'
-      }
-    ])).flat()
+        abi: earnVaultABI as Abi,
+        functionName: 'asset',
+      },
+    ] as const),
   })
 
   // Transform vault details into DeployedVault[]
   const deployedVaults: DeployedVault[] = vaultAddresses && vaultDetails ? 
-    (vaultAddresses as Address[]).map((address, index) => ({
+    vaultAddresses.map((address: Address, index: number) => ({
       address,
-      name: (vaultDetails[index * 2]?.result as string) || 'Error loading vault',
-      asset: (vaultDetails[index * 2 + 1]?.result as Address) || zeroAddress
+      name: (vaultDetails[index * 2]?.result as string) ?? 'Error loading vault',
+      asset: (vaultDetails[index * 2 + 1]?.result as Address) ?? zeroAddress
     })) : []
 
   // Deploy contract write
