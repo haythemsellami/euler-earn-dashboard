@@ -307,7 +307,6 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
   const [earnStrategies, setEarnStrategies] = useState<Strategy[]>([])
   const [vaultName, setVaultName] = useState<string>('')
   const [vaultAsset, setVaultAsset] = useState<{ address: Address; symbol: string }>({ address: zeroAddress, symbol: '' })
-  const [availableRoles, setAvailableRoles] = useState<string[]>([])
 
   // Add function to check if an address has a role
   const checkHasRole = async (role: string, account: Address) => {
@@ -333,35 +332,6 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
       return false;
     }
   };
-
-  // Add function to update available roles
-  const updateAvailableRoles = useCallback(async () => {
-    if (!walletClient || !address) return;
-
-    try {
-      const availableRoles = await Promise.all(
-        Object.values(roles).map(async (role) => {
-          const hasRole = await checkHasRole(role, walletClient.account.address);
-          return { role, hasRole };
-        })
-      );
-
-      setAvailableRoles(
-        availableRoles
-          .filter(({ hasRole }) => hasRole)
-          .map(({ role }) => role)
-      );
-    } catch (error) {
-      console.error('Error checking roles:', error);
-    }
-  }, [walletClient, address]);
-
-  // Add effect to update available roles when signer changes
-  useEffect(() => {
-    if (walletClient && address) {
-      updateAvailableRoles();
-    }
-  }, [walletClient, address, updateAvailableRoles]);
 
   // Add effect to fetch strategies
   const fetchStrategies = useCallback(async () => {
@@ -1159,7 +1129,7 @@ export default function ConfigureVault({ params: { address } }: { params: { addr
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableRoles.map((role) => (
+                    {roles.map((role) => (
                       <SelectItem key={role} value={role}>
                         {role}
                       </SelectItem>
